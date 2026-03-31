@@ -1,0 +1,15 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.swp
+appsettings.Development.json
+appsettings.Production.json
+.env
+.env.*
+secrets/
+*.pfx
+*.pem
+.DS_Store
+*.log

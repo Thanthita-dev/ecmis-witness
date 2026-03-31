@@ -1,0 +1,80 @@
+stages:
+  - build
+  - test
+  - publish
+  - deploy
+
+build:
+  stage: build
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  script:
+    - dotnet restore
+    - dotnet build --no-restore -c Release
+  only:
+    - develop
+    - main
+    - /^feature\/.*/
+    - /^release\/.*/
+
+test:unit:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  script:
+    - dotnet test tests/Unit --no-build -c Release
+  only:
+    - develop
+    - main
+    - /^feature\/.*/
+
+test:integration:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  services:
+    - postgres:16
+  variables:
+    POSTGRES_DB: ecmis_test
+    POSTGRES_USER: ecmis
+    POSTGRES_PASSWORD: ecmis_test
+  script:
+    - dotnet test tests/Integration --no-build -c Release
+  only:
+    - develop
+    - main
+
+docker:build:
+  stage: publish
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  only:
+    - develop
+    - main
+    - /^release\/.*/
+
+deploy:dev:
+  stage: deploy
+  script:
+    - echo "Deploy ecmis-witness to Dev"
+  environment:
+    name: development
+  only:
+    - develop
+
+deploy:staging:
+  stage: deploy
+  script:
+    - echo "Deploy ecmis-witness to Staging"
+  environment:
+    name: staging
+  only:
+    - /^release\/.*/
+
+deploy:production:
+  stage: deploy
+  script:
+    - echo "Deploy ecmis-witness to Production"
+  environment:
+    name: production
+  when: manual
+  only:
+    - main
