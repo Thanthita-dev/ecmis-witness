@@ -1335,7 +1335,7 @@ public sealed class WitnessRepository(
             cmd.Parameters.AddWithValue(caseId);
             cmd.Parameters.AddWithValue(request.ResultType.Trim().ToLowerInvariant());
             cmd.Parameters.AddWithValue(request.ReferenceNo.Trim());
-            cmd.Parameters.AddWithValue(request.DecisionAt);
+            cmd.Parameters.AddWithValue(request.DecisionAt.ToUniversalTime());
             cmd.Parameters.AddWithValue(request.Reason.Trim());
             cmd.Parameters.AddWithValue(payloadJson);
             cmd.Parameters.AddWithValue(user.UserId);
@@ -2291,7 +2291,7 @@ public sealed class WitnessRepository(
             """, connection, tx);
         cmd.Parameters.AddWithValue(Guid.NewGuid());
         cmd.Parameters.AddWithValue(caseRow.Id);
-        cmd.Parameters.AddWithValue(filedAt);
+        cmd.Parameters.AddWithValue(filedAt.ToUniversalTime());
         cmd.Parameters.AddWithValue(channel.Trim());
         cmd.Parameters.AddWithValue(request.Reason.Trim());
         cmd.Parameters.AddWithValue((object?)Normalize(lateReason) ?? DBNull.Value);
@@ -2335,7 +2335,7 @@ public sealed class WitnessRepository(
         cmd.Parameters.AddWithValue(Guid.NewGuid());
         cmd.Parameters.AddWithValue(caseRow.Id);
         cmd.Parameters.AddWithValue(formNumber);
-        cmd.Parameters.AddWithValue(sentAt);
+        cmd.Parameters.AddWithValue(sentAt.ToUniversalTime());
         cmd.Parameters.AddWithValue(channel.Trim());
         cmd.Parameters.AddWithValue(recipient.Trim());
         cmd.Parameters.AddWithValue((object?)Normalize(trackingReference) ?? DBNull.Value);
@@ -2378,7 +2378,7 @@ public sealed class WitnessRepository(
             )
             """, connection, tx);
         cmd.Parameters.AddWithValue(caseId);
-        cmd.Parameters.AddWithValue(receivedAt);
+        cmd.Parameters.AddWithValue(receivedAt.ToUniversalTime());
         cmd.Parameters.AddWithValue(proofAttachmentId);
         if (await cmd.ExecuteNonQueryAsync(ct) == 0)
             throw new WitnessWorkflowException("ไม่พบประวัติการส่งหนังสือสำหรับบันทึกวันรับ");
