@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ecmis-witness
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: ConnectionStrings__Ecmis
+        sync: false
+      - key: Witness__AdminApiBaseUrl
+        sync: false
+      - key: Witness__AllowedOrigins__0
+        sync: false
