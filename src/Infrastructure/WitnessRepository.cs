@@ -2313,6 +2313,8 @@ public sealed class WitnessRepository(
         var data = request.Data ?? throw new WitnessWorkflowException("กรุณาระบุข้อมูลการส่งหนังสือแจ้งผล");
         if (!data.TryGetValue("sent_at", out var sentValue) || !DateTimeOffset.TryParse(sentValue, out var sentAt))
             throw new WitnessWorkflowException("กรุณาระบุวันที่และเวลาส่งหนังสือ");
+        if (sentAt.ToUniversalTime() > now)
+            throw new WitnessWorkflowException("วันส่งหนังสือต้องไม่เป็นเวลาในอนาคต");
         if (!data.TryGetValue("delivery_channel", out var channel) || string.IsNullOrWhiteSpace(channel))
             throw new WitnessWorkflowException("กรุณาระบุช่องทางส่งหนังสือ");
         if (!data.TryGetValue("recipient", out var recipient) || string.IsNullOrWhiteSpace(recipient))

@@ -465,6 +465,19 @@ public sealed class WitnessPersistenceIntegrationTests
                 await prepareNoticeSignatures.ExecuteNonQueryAsync();
             }
 
+            var futureNoticeError = await Assert.ThrowsAsync<WitnessWorkflowException>(() =>
+                repository.ExecuteCommandAsync(caseId, "send-notice",
+                    new ExecuteWitnessCommandRequest(
+                        "ทดสอบป้องกันวันส่งหนังสือในอนาคต",
+                        linked.Case.Version,
+                        new Dictionary<string, string>
+                        {
+                            ["sent_at"] = DateTimeOffset.UtcNow.AddDays(1).ToString("O"),
+                            ["delivery_channel"] = "เจ้าหน้าที่นำส่ง",
+                            ["recipient"] = "ผู้ยื่นคำร้อง"
+                        }), user, "127.0.0.1", default));
+            Assert.Equal("วันส่งหนังสือต้องไม่เป็นเวลาในอนาคต", futureNoticeError.Message);
+
             var sent = await repository.ExecuteCommandAsync(caseId, "send-notice",
                 new ExecuteWitnessCommandRequest(
                     "ส่งหนังสืออนุมัติให้ผู้ยื่น",
