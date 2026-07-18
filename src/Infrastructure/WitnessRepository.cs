@@ -1212,7 +1212,7 @@ public sealed class WitnessRepository(
         var nextVersion = caseRow.Version + 1;
         var now = DateTimeOffset.UtcNow;
         var ownerRole = OwnerForStatus(definition.ToStatus);
-        var receivedAt = ParseNoticeReceivedAt(action, request.Data);
+        var receivedAt = ParseNoticeReceivedAt(action, request.Data)?.ToUniversalTime();
         DateOnly? appealDeadline = action == "record-notice-receipt-rejected" && receivedAt.HasValue
             ? DateOnly.FromDateTime(receivedAt.Value.ToOffset(TimeSpan.FromHours(7)).Date).AddDays(30)
             : null;

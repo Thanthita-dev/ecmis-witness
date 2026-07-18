@@ -471,7 +471,7 @@ public sealed class WitnessPersistenceIntegrationTests
                     linked.Case.Version,
                     new Dictionary<string, string>
                     {
-                        ["sent_at"] = DateTimeOffset.UtcNow.ToString("O"),
+                        ["sent_at"] = "2026-07-18T10:00:00+07:00",
                         ["delivery_channel"] = "เจ้าหน้าที่นำส่ง",
                         ["recipient"] = "ผู้ยื่นคำร้อง",
                         ["tracking_reference"] = "INTEGRATION-TEST"
@@ -488,7 +488,7 @@ public sealed class WitnessPersistenceIntegrationTests
                     sent.Version,
                     new Dictionary<string, string>
                     {
-                        ["received_at"] = DateTimeOffset.UtcNow.ToString("O"),
+                        ["received_at"] = "2026-07-18T10:30:00+07:00",
                         ["receipt_proof_attachment_id"] = attachment.Id.ToString()
                     }), user, "127.0.0.1", default);
             Assert.Equal(WitnessStatuses.ProtectionSetup, received.ToStatus);
