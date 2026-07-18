@@ -1321,6 +1321,8 @@ public sealed class WitnessRepository(
             };
         }
         var now = DateTimeOffset.UtcNow;
+        if (request.DecisionAt.ToUniversalTime() > now)
+            throw new WitnessWorkflowException("วันที่คำสั่งจาก External Module ต้องไม่เป็นเวลาในอนาคต");
         var nextVersion = caseRow.Version + 1;
         var payloadJson = JsonSerializer.Serialize(request.Data ?? [], JsonOptions);
 
