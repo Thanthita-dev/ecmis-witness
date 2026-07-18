@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using EcmisWitness.Api.Domain;
 using EcmisWitness.Api.Security;
@@ -207,6 +208,27 @@ public sealed class WitnessFormValidationTests
     [InlineData(16)] [InlineData(17)]
     public void Every_official_form_declares_signature_purposes(int number)
         => Assert.NotEmpty(WitnessProtectionFormCatalog.SignaturePurposes(number));
+
+    [Fact]
+    public void Iso_form_date_is_gregorian_even_when_current_culture_is_thai()
+    {
+        var previousCulture = CultureInfo.CurrentCulture;
+        var previousUiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("th-TH");
+            CultureInfo.CurrentUICulture = new CultureInfo("th-TH");
+
+            Assert.True(WitnessIsoDate.TryParse("2026-07-19", out var parsed));
+            Assert.Equal(new DateOnly(2026, 7, 19), parsed);
+            Assert.False(WitnessIsoDate.TryParse("19/07/2569", out _));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+            CultureInfo.CurrentUICulture = previousUiCulture;
+        }
+    }
 
     private static Dictionary<string, string> CompleteValues(int number)
     {

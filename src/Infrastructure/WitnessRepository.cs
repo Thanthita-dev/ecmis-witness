@@ -2410,8 +2410,8 @@ public sealed class WitnessRepository(
         var values = ReadDictionary(raw);
         var startKey = formNumber == 14 ? "extension_start" : "start_date";
         var endKey = formNumber == 14 ? "extension_end" : "end_date";
-        if (!DateOnly.TryParse(values.GetValueOrDefault(startKey), out var start)
-            || !DateOnly.TryParse(values.GetValueOrDefault(endKey), out var end)
+        if (!WitnessIsoDate.TryParse(values.GetValueOrDefault(startKey), out var start)
+            || !WitnessIsoDate.TryParse(values.GetValueOrDefault(endKey), out var end)
             || end < start)
             throw new WitnessWorkflowException($"ช่วงวันที่ในแบบ คบ.{formNumber} ไม่ถูกต้อง");
         var days = end.DayNumber - start.DayNumber + 1;

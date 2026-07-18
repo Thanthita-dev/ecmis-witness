@@ -273,7 +273,7 @@ public sealed class WitnessFormPolicy
         out DateOnly value)
     {
         value = default;
-        return values.TryGetValue(key, out var raw) && DateOnly.TryParse(raw, out value);
+        return values.TryGetValue(key, out var raw) && WitnessIsoDate.TryParse(raw, out value);
     }
 
     private static bool IsFieldComplete(
