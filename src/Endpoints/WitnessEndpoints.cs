@@ -361,9 +361,10 @@ public static class WitnessEndpoints
         {
             var user = await RequireUserAsync(http, users, ct);
             if (!user.HasPermission(WitnessPermissions.DocumentDownload))
-                throw new UnauthorizedAccessException("ไม่มีสิทธิ์สร้างหรือดาวน์โหลดเอกสาร");
-            var form = await repository.GetFormAsync(caseId, formNumber, user, ClientIp(http), ct)
-                       ?? throw new InvalidOperationException($"ยังไม่มีแบบ คบ.{formNumber} ในแฟ้มนี้");
+                throw new WitnessAuthorizationException("ไม่มีสิทธิ์สร้างหรือดาวน์โหลดเอกสาร");
+            var form = await repository.GetFormAsync(caseId, formNumber, user, ClientIp(http), ct);
+            if (form is null)
+                return Results.NotFound(ApiEnvelope<object>.Fail("ไม่พบแบบฟอร์มหรือไม่มีสิทธิ์เข้าถึงแฟ้มนี้"));
             if (form.Status == "draft")
                 throw new InvalidOperationException("ต้องบันทึกแบบฟอร์มฉบับสมบูรณ์ก่อนสร้างเอกสาร");
             var content = documents.GenerateOfficialDocx(form);
