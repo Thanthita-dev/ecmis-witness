@@ -62,6 +62,59 @@ public static class WitnessEndpoints
             DateOnly? protectionExpiryBefore,
             string? transferStatus,
             string? organization,
+            int? page,
+            int? pageSize,
+            string? sortBy,
+            string? sortDirection,
+            string? statusGroup,
+            WitnessUserContextService users,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var user = await RequireUserAsync(http, users, ct);
+            var query = new WitnessCaseSearchQuery(
+                status, search, formNumber, receivedFrom, receivedTo, isUrgent,
+                riskLevel, owner, mainCase, appealSla, protectionExpiryBefore,
+                transferStatus, organization);
+            var usesPagedContract = page.HasValue
+                                    || pageSize.HasValue
+                                    || !string.IsNullOrWhiteSpace(sortBy)
+                                    || !string.IsNullOrWhiteSpace(sortDirection)
+                                    || !string.IsNullOrWhiteSpace(statusGroup);
+            if (!usesPagedContract)
+            {
+                var legacyCases = await repository.ListAsync(user, query, ct);
+                return Results.Ok(ApiEnvelope<IReadOnlyList<WitnessCaseSummaryDto>>.Ok(legacyCases));
+            }
+
+            var cases = await repository.ListPagedAsync(user, query with
+            {
+                Page = page ?? WitnessRegistryQueryContract.DefaultPage,
+                PageSize = pageSize ?? WitnessRegistryQueryContract.DefaultPageSize,
+                SortBy = sortBy,
+                SortDirection = sortDirection,
+                StatusGroup = statusGroup
+            }, ct);
+            return Results.Ok(ApiEnvelope<WitnessPagedResultDto<WitnessCaseSummaryDto>>.Ok(cases));
+        });
+
+        // Compatibility endpoint for clients that still consume the original array contract.
+        // New registry clients must use GET /cases so paging and visibility totals are enforced server-side.
+        group.MapGet("/cases/legacy", async (
+            HttpContext http,
+            string? status,
+            string? search,
+            int? formNumber,
+            DateOnly? receivedFrom,
+            DateOnly? receivedTo,
+            bool? isUrgent,
+            string? riskLevel,
+            string? owner,
+            string? mainCase,
+            string? appealSla,
+            DateOnly? protectionExpiryBefore,
+            string? transferStatus,
+            string? organization,
             WitnessUserContextService users,
             WitnessRepository repository,
             CancellationToken ct) =>
@@ -140,6 +193,114 @@ public static class WitnessEndpoints
             var user = await RequireUserAsync(http, users, ct);
             var created = await repository.CreateAsync(request, user, ClientIp(http), ct);
             return Results.Created($"/api/witness/cases/{created.Case.Id}", ApiEnvelope<WitnessCaseDetailDto>.Ok(created, "บันทึกคำร้องเรียบร้อย"));
+        });
+
+        group.MapPost("/cases/{caseId:guid}/forms/1/share-links", async (
+            Guid caseId,
+            HttpContext http,
+            WitnessUserContextService users,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var user = await RequireUserAsync(http, users, ct);
+            var result = await repository.CreateKb1ShareLinkAsync(caseId, user, ClientIp(http), ct);
+            return Results.Ok(ApiEnvelope<WitnessKb1ShareLinkDto>.Ok(
+                result, "สร้างลิงก์สำหรับผู้ยื่นกรอกแบบ คบ.1 แล้ว"));
+        });
+
+        group.MapGet("/cases/{caseId:guid}/forms/1/share-links/current", async (
+            Guid caseId,
+            HttpContext http,
+            WitnessUserContextService users,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var user = await RequireUserAsync(http, users, ct);
+            var result = await repository.GetCurrentKb1ShareLinkAsync(caseId, user, ct);
+            return result is null
+                ? Results.NotFound(ApiEnvelope<object>.Fail("ยังไม่มีลิงก์สำหรับผู้ยื่น"))
+                : Results.Ok(ApiEnvelope<WitnessKb1ShareLinkDto>.Ok(result));
+        });
+
+        group.MapDelete("/cases/{caseId:guid}/forms/1/share-links/current", async (
+            Guid caseId,
+            HttpContext http,
+            WitnessUserContextService users,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var user = await RequireUserAsync(http, users, ct);
+            await repository.RevokeKb1ShareLinkAsync(caseId, user, ClientIp(http), ct);
+            return Results.Ok(ApiEnvelope<object>.Ok(new { revoked = true }, "ยกเลิกลิงก์แล้ว"));
+        });
+
+        group.MapGet("/public/kb1", async (
+            HttpContext http,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var result = await repository.GetPublicKb1DraftAsync(
+                RequireShareToken(http), ClientIp(http), ct);
+            return Results.Ok(ApiEnvelope<WitnessPublicKb1DraftDto>.Ok(result));
+        });
+
+        group.MapPut("/public/kb1", async (
+            HttpContext http,
+            SaveWitnessPublicKb1Request request,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var result = await repository.SavePublicKb1DraftAsync(
+                RequireShareToken(http), request, ClientIp(http), ct);
+            return Results.Ok(ApiEnvelope<WitnessPublicKb1DraftDto>.Ok(
+                result, request.Complete ? "ส่งข้อมูลให้เจ้าหน้าที่แล้ว" : "บันทึกร่างแล้ว"));
+        });
+
+        group.MapPost("/public/kb1/attachments", async (
+            HttpContext http,
+            IFormFile file,
+            string? idempotencyKey,
+            WitnessRepository repository,
+            WitnessFileValidator validator,
+            CancellationToken ct) =>
+        {
+            if (file.Length > validator.MaxBytes)
+                throw new InvalidOperationException($"ไฟล์แนบต้องมีขนาดไม่เกิน {validator.MaxBytes / 1024 / 1024} MB");
+            await using var stream = file.OpenReadStream();
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+            var content = buffer.ToArray();
+            validator.Validate(file.FileName, file.ContentType, content);
+            var result = await repository.AddPublicKb1AttachmentAsync(
+                RequireShareToken(http), idempotencyKey ?? Guid.NewGuid().ToString("N"),
+                Path.GetFileName(file.FileName),
+                string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType,
+                content, ClientIp(http), ct);
+            return Results.Ok(ApiEnvelope<WitnessAttachmentDto>.Ok(result, "แนบเอกสารแล้ว"));
+        }).DisableAntiforgery();
+
+        group.MapGet("/public/kb1/attachments/{attachmentId:guid}", async (
+            Guid attachmentId,
+            HttpContext http,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var result = await repository.GetPublicKb1AttachmentContentAsync(
+                RequireShareToken(http), attachmentId, ClientIp(http), ct);
+            return result is null
+                ? Results.NotFound(ApiEnvelope<object>.Fail("ไม่พบเอกสารแนบ"))
+                : Results.File(result.Content, result.ContentType, result.FileName, enableRangeProcessing: true);
+        });
+
+        group.MapDelete("/public/kb1/attachments/{attachmentId:guid}", async (
+            Guid attachmentId,
+            HttpContext http,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            await repository.DeletePublicKb1AttachmentAsync(
+                RequireShareToken(http), attachmentId, ClientIp(http), ct);
+            return Results.Ok(ApiEnvelope<object>.Ok(new { deleted = true }, "ลบเอกสารแนบแล้ว"));
         });
 
         group.MapGet("/cases/{caseId:guid}", async (
@@ -280,7 +441,14 @@ public static class WitnessEndpoints
         {
             var user = await RequireUserAsync(http, users, ct);
             var result = await repository.ExecuteCommandAsync(caseId, action, request, user, ClientIp(http), ct);
-            return Results.Ok(ApiEnvelope<WitnessCommandResultDto>.Ok(result, "บันทึกการส่งต่องานแล้ว"));
+            var message = action switch
+            {
+                "notify-appeal-result" => "ส่งหนังสือแจ้งผลอุทธรณ์แล้ว",
+                "record-appeal-result-receipt" => "บันทึกวันรับผลอุทธรณ์แล้ว",
+                "complete-appeal-result-notification" => "ปิดกระบวนการแจ้งผลอุทธรณ์แล้ว",
+                _ => "บันทึกการส่งต่องานแล้ว"
+            };
+            return Results.Ok(ApiEnvelope<WitnessCommandResultDto>.Ok(result, message));
         });
 
         group.MapPost("/cases/{caseId:guid}/external-results", async (
@@ -302,6 +470,9 @@ public static class WitnessEndpoints
             IFormFile file,
             int? formNumber,
             int? formVersion,
+            Guid? appealId,
+            string? evidenceType,
+            string? idempotencyKey,
             WitnessUserContextService users,
             WitnessRepository repository,
             WitnessFileValidator validator,
@@ -316,10 +487,26 @@ public static class WitnessEndpoints
             var content = buffer.ToArray();
             validator.Validate(file.FileName, file.ContentType, content);
             var result = await repository.AddAttachmentAsync(caseId, formNumber, formVersion,
+                appealId, evidenceType, idempotencyKey,
                 Path.GetFileName(file.FileName), string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType,
                 content, user, ClientIp(http), ct);
             return Results.Ok(ApiEnvelope<WitnessAttachmentDto>.Ok(result, "อัปโหลดเอกสารแล้ว"));
         }).DisableAntiforgery();
+
+        group.MapGet("/cases/{caseId:guid}/attachments", async (
+            Guid caseId,
+            Guid? appealId,
+            HttpContext http,
+            WitnessUserContextService users,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            if (!appealId.HasValue)
+                throw new WitnessWorkflowException("กรุณาระบุคำอุทธรณ์สำหรับกรองเอกสาร");
+            var user = await RequireUserAsync(http, users, ct);
+            var result = await repository.ListAppealAttachmentsAsync(caseId, appealId.Value, user, ct);
+            return Results.Ok(ApiEnvelope<IReadOnlyList<WitnessAttachmentDto>>.Ok(result));
+        });
 
         group.MapGet("/cases/{caseId:guid}/attachments/{attachmentId:guid}", async (
             Guid caseId,
@@ -361,9 +548,10 @@ public static class WitnessEndpoints
         {
             var user = await RequireUserAsync(http, users, ct);
             if (!user.HasPermission(WitnessPermissions.DocumentDownload))
-                throw new UnauthorizedAccessException("ไม่มีสิทธิ์สร้างหรือดาวน์โหลดเอกสาร");
-            var form = await repository.GetFormAsync(caseId, formNumber, user, ClientIp(http), ct)
-                       ?? throw new InvalidOperationException($"ยังไม่มีแบบ คบ.{formNumber} ในแฟ้มนี้");
+                throw new WitnessAuthorizationException("ไม่มีสิทธิ์สร้างหรือดาวน์โหลดเอกสาร");
+            var form = await repository.GetFormAsync(caseId, formNumber, user, ClientIp(http), ct);
+            if (form is null)
+                return Results.NotFound(ApiEnvelope<object>.Fail("ไม่พบแบบฟอร์มหรือไม่มีสิทธิ์เข้าถึงแฟ้มนี้"));
             if (form.Status == "draft")
                 throw new InvalidOperationException("ต้องบันทึกแบบฟอร์มฉบับสมบูรณ์ก่อนสร้างเอกสาร");
             var content = documents.GenerateOfficialDocx(form);
@@ -398,4 +586,12 @@ public static class WitnessEndpoints
 
     private static string ClientIp(HttpContext http)
         => http.Connection.RemoteIpAddress?.ToString() ?? "";
+
+    private static string RequireShareToken(HttpContext http)
+    {
+        var token = http.Request.Headers["X-Witness-Share-Token"].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(token))
+            throw new WitnessWorkflowException("ไม่พบรหัสเข้าถึงแบบ คบ.1");
+        return token.Trim();
+    }
 }

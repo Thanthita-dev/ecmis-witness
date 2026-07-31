@@ -28,6 +28,8 @@ public static class WitnessStatuses
     public const string AppealReceived = "appeal_received";
     public const string AppealExternalPending = "appeal_external_pending";
     public const string AppealDecided = "appeal_decided";
+    public const string AppealResultNoticeSent = "appeal_result_notice_sent";
+    public const string AppealResultReceived = "appeal_result_received";
     public const string TransferExternalPending = "transfer_external_pending";
     public const string TransferWaiting = "transfer_waiting";
     public const string TransferAccepted = "transfer_accepted";
@@ -73,13 +75,16 @@ public sealed class WitnessWorkflowStateMachine
         D("request-termination", "ส่งคำขอยุติไป External Module", [WitnessStatuses.ProtectionActive], WitnessStatuses.TerminationExternalPending, WitnessPermissions.ProtectionManage, true),
         D("receive-appeal", "รับคำอุทธรณ์", [WitnessStatuses.AppealWindow], WitnessStatuses.AppealReceived, WitnessPermissions.AppealManage, true),
         D("submit-appeal", "ส่งอุทธรณ์ไป External Module", [WitnessStatuses.AppealReceived], WitnessStatuses.AppealExternalPending, WitnessPermissions.AppealManage, true),
+        D("notify-appeal-result", "ส่งหนังสือแจ้งผลอุทธรณ์", [WitnessStatuses.AppealDecided, WitnessStatuses.ApprovedPendingNotice, WitnessStatuses.ProtectionActive], WitnessStatuses.AppealResultNoticeSent, WitnessPermissions.AppealManage, true),
+        D("record-appeal-result-receipt", "บันทึกวันรับผลอุทธรณ์", [WitnessStatuses.AppealResultNoticeSent], WitnessStatuses.AppealResultReceived, WitnessPermissions.AppealManage, true),
+        D("complete-appeal-result-notification", "ปิดกระบวนการอุทธรณ์และดำเนินแฟ้มตามผล", [WitnessStatuses.AppealResultReceived], WitnessStatuses.Closed, WitnessPermissions.AppealManage, true),
         D("request-transfer", "เสนอส่งต่อกรมคุ้มครองสิทธิฯ ผ่าน External Module", [WitnessStatuses.ProtectionActive], WitnessStatuses.TransferExternalPending, WitnessPermissions.ProtectionManage, true),
         D("record-transfer-accepted", "กรมรับตัว", [WitnessStatuses.TransferWaiting], WitnessStatuses.TransferAccepted, WitnessPermissions.ProtectionManage, true),
         D("record-transfer-rejected", "กรมไม่รับตัว", [WitnessStatuses.TransferWaiting], WitnessStatuses.TransferRejected, WitnessPermissions.ProtectionManage, true),
         D("complete-transfer", "บันทึกส่งมอบพยาน", [WitnessStatuses.TransferAccepted], WitnessStatuses.Transferred, WitnessPermissions.ProtectionManage, true, 12),
         D("resume-after-transfer-rejected", "กลับมาคุ้มครองต่อ", [WitnessStatuses.TransferRejected], WitnessStatuses.ProtectionActive, WitnessPermissions.ProtectionManage, true),
         D("close-after-transfer-rejected", "สิ้นสุดการคุ้มครองเมื่อกรมไม่รับตัว", [WitnessStatuses.TransferRejected], WitnessStatuses.Closed, WitnessPermissions.ProtectionManage, true),
-        D("close-no-appeal", "ปิดเรื่องเมื่อพ้นกำหนดอุทธรณ์", [WitnessStatuses.AppealWindow, WitnessStatuses.AppealDecided], WitnessStatuses.Closed, WitnessPermissions.AppealManage, true)
+        D("close-no-appeal", "ปิดเรื่องเมื่อพ้นกำหนดอุทธรณ์", [WitnessStatuses.AppealWindow], WitnessStatuses.Closed, WitnessPermissions.AppealManage, true)
     ];
 
     public IReadOnlyList<WitnessAvailableActionDto> GetAvailableActions(
@@ -172,7 +177,9 @@ public sealed class WitnessWorkflowStateMachine
         WitnessStatuses.AppealWindow => "อยู่ในกำหนดอุทธรณ์ 30 วัน",
         WitnessStatuses.AppealReceived => "รับคำอุทธรณ์แล้ว",
         WitnessStatuses.AppealExternalPending => "รอผลอุทธรณ์จาก External Module",
-        WitnessStatuses.AppealDecided => "บันทึกผลอุทธรณ์แล้ว",
+        WitnessStatuses.AppealDecided => "ผลอุทธรณ์ชี้ขาดแล้ว รอแจ้งผู้ยื่น",
+        WitnessStatuses.AppealResultNoticeSent => "ส่งหนังสือแจ้งผลอุทธรณ์แล้ว รอบันทึกวันรับ",
+        WitnessStatuses.AppealResultReceived => "ผู้ยื่นรับผลอุทธรณ์แล้ว รอดำเนินแฟ้มตามผล",
         WitnessStatuses.TransferExternalPending => "รอผลอนุมัติส่งต่อจาก External Module",
         WitnessStatuses.TransferWaiting => "รอกรมคุ้มครองสิทธิฯ ตอบรับ",
         WitnessStatuses.TransferAccepted => "กรมรับตัว รอส่งมอบ",
@@ -206,6 +213,9 @@ public sealed class WitnessWorkflowStateMachine
         WitnessStatuses.AppealWindow => "รับอุทธรณ์หรือปิดเรื่องเมื่อครบกำหนด",
         WitnessStatuses.AppealReceived => "ส่งอุทธรณ์ไป External Module",
         WitnessStatuses.AppealExternalPending => "รอบันทึกผลชี้ขาด",
+        WitnessStatuses.AppealDecided => "จัดทำและส่งหนังสือแจ้งผลอุทธรณ์",
+        WitnessStatuses.AppealResultNoticeSent => "บันทึกวันรับและหลักฐานการรับผลอุทธรณ์",
+        WitnessStatuses.AppealResultReceived => "ปิดกระบวนการอุทธรณ์และดำเนินแฟ้มตามผลชี้ขาด",
         WitnessStatuses.TransferExternalPending => "รอผลอนุมัติส่งต่อจาก External Module",
         WitnessStatuses.TransferWaiting => "บันทึกผลตอบรับจากกรมฯ",
         WitnessStatuses.TransferAccepted => "จัดทำ คบ.12",
@@ -265,3 +275,4 @@ public sealed class WitnessWorkflowStateMachine
 public sealed class WitnessWorkflowException(string message) : InvalidOperationException(message);
 public sealed class WitnessAuthorizationException(string message) : UnauthorizedAccessException(message);
 public sealed class WitnessConcurrencyException(string message) : InvalidOperationException(message);
+public sealed class WitnessIdempotencyConflictException(string message) : InvalidOperationException(message);

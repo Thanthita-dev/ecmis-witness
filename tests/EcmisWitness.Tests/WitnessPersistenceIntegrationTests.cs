@@ -19,7 +19,11 @@ public sealed class WitnessPersistenceIntegrationTests
         await new WitnessDatabaseInitializer(dataSource).InitializeAsync();
         var repository = new WitnessRepository(dataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
         var manager = new WitnessUserContext(Guid.NewGuid(), "assignment-admin", "ผู้ดูแลการมอบหมาย", "ผู้ดูแลระบบ",
-            new HashSet<string> { "super_admin" }, new HashSet<string>());
+            new HashSet<string> { "super_admin" }, new HashSet<string>
+            {
+                WitnessPermissions.Create,
+                WitnessPermissions.AssignmentManage
+            });
         var organizationA = Guid.NewGuid();
         var organizationB = Guid.NewGuid();
         var assignedUserId = Guid.NewGuid();
@@ -168,14 +172,17 @@ public sealed class WitnessPersistenceIntegrationTests
         await using var dataSource = NpgsqlDataSource.Create(connectionString);
         await new WitnessDatabaseInitializer(dataSource).InitializeAsync();
         var repository = new WitnessRepository(dataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
+        var organization = Guid.NewGuid();
         var supervisor = new WitnessUserContext(Guid.NewGuid(), "opinion-supervisor", "หัวหน้ากลุ่มทดสอบ", "หัวหน้ากลุ่มงาน",
             new HashSet<string> { "super_admin" }, new HashSet<string>
             {
+                WitnessPermissions.Create,
                 WitnessPermissions.OfficerReview,
                 WitnessPermissions.SupervisorReview
-            });
+            }, organization, "สำนักทดสอบ", "department");
         var director = new WitnessUserContext(Guid.NewGuid(), "opinion-director", "ผู้อำนวยการทดสอบ", "ผู้อำนวยการสำนัก",
-            new HashSet<string> { "super_admin" }, new HashSet<string> { WitnessPermissions.DirectorReview });
+            new HashSet<string> { "super_admin" }, new HashSet<string> { WitnessPermissions.DirectorReview },
+            organization, "สำนักทดสอบ", "department");
         Guid caseId = Guid.Empty;
 
         try
@@ -192,6 +199,17 @@ public sealed class WitnessPersistenceIntegrationTests
                 Submit: false,
                 IdempotencyKey: $"opinion-{Guid.NewGuid():N}"), supervisor, "127.0.0.1", default);
             caseId = created.Case.Id;
+            await using (var setOrganization = dataSource.CreateCommand("""
+                UPDATE witness.cases
+                SET owning_org_id=$2, current_owner_org_id=$2,
+                    owning_org_name='สำนักทดสอบ', current_owner_org_name='สำนักทดสอบ'
+                WHERE id=$1
+                """))
+            {
+                setOrganization.Parameters.AddWithValue(caseId);
+                setOrganization.Parameters.AddWithValue(organization);
+                await setOrganization.ExecuteNonQueryAsync();
+            }
             var formId = Guid.NewGuid();
             await using (var insertForm = dataSource.CreateCommand("""
                 INSERT INTO witness.forms(
@@ -316,7 +334,11 @@ public sealed class WitnessPersistenceIntegrationTests
             new HashSet<string> { "admin" }, new HashSet<string>
             {
                 "witness.*",
-                WitnessPermissions.NoticeManage
+                WitnessPermissions.Create,
+                WitnessPermissions.Edit,
+                WitnessPermissions.OfficerReview,
+                WitnessPermissions.NoticeManage,
+                WitnessPermissions.DocumentDownload
             });
         var repository = new WitnessRepository(firstDataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
         Guid caseId = Guid.Empty;
@@ -465,13 +487,26 @@ public sealed class WitnessPersistenceIntegrationTests
                 await prepareNoticeSignatures.ExecuteNonQueryAsync();
             }
 
+            var futureNoticeError = await Assert.ThrowsAsync<WitnessWorkflowException>(() =>
+                repository.ExecuteCommandAsync(caseId, "send-notice",
+                    new ExecuteWitnessCommandRequest(
+                        "ทดสอบป้องกันวันส่งหนังสือในอนาคต",
+                        linked.Case.Version,
+                        new Dictionary<string, string>
+                        {
+                            ["sent_at"] = DateTimeOffset.UtcNow.AddDays(1).ToString("O"),
+                            ["delivery_channel"] = "เจ้าหน้าที่นำส่ง",
+                            ["recipient"] = "ผู้ยื่นคำร้อง"
+                        }), user, "127.0.0.1", default));
+            Assert.Equal("วันส่งหนังสือต้องไม่เป็นเวลาในอนาคต", futureNoticeError.Message);
+
             var sent = await repository.ExecuteCommandAsync(caseId, "send-notice",
                 new ExecuteWitnessCommandRequest(
                     "ส่งหนังสืออนุมัติให้ผู้ยื่น",
                     linked.Case.Version,
                     new Dictionary<string, string>
                     {
-                        ["sent_at"] = DateTimeOffset.UtcNow.ToString("O"),
+                        ["sent_at"] = "2026-07-18T10:00:00+07:00",
                         ["delivery_channel"] = "เจ้าหน้าที่นำส่ง",
                         ["recipient"] = "ผู้ยื่นคำร้อง",
                         ["tracking_reference"] = "INTEGRATION-TEST"
@@ -488,7 +523,7 @@ public sealed class WitnessPersistenceIntegrationTests
                     sent.Version,
                     new Dictionary<string, string>
                     {
-                        ["received_at"] = DateTimeOffset.UtcNow.ToString("O"),
+                        ["received_at"] = "2026-07-18T10:30:00+07:00",
                         ["receipt_proof_attachment_id"] = attachment.Id.ToString()
                     }), user, "127.0.0.1", default);
             Assert.Equal(WitnessStatuses.ProtectionSetup, received.ToStatus);
@@ -534,7 +569,12 @@ public sealed class WitnessPersistenceIntegrationTests
             new WitnessFormPolicy());
         var administrator = new WitnessUserContext(
             Guid.NewGuid(), "scope-test-admin", "Scope Test Admin", "ผู้ทดสอบ",
-            new HashSet<string> { "super_admin" }, new HashSet<string>());
+            new HashSet<string> { "super_admin" }, new HashSet<string>
+            {
+                WitnessPermissions.Create,
+                WitnessPermissions.Edit,
+                WitnessPermissions.DocumentDownload
+            });
         var organizationA = Guid.NewGuid();
         var organizationB = Guid.NewGuid();
         var createdCaseIds = new List<Guid>();
@@ -657,6 +697,117 @@ public sealed class WitnessPersistenceIntegrationTests
         finally
         {
             foreach (var caseId in createdCaseIds)
+            {
+                await using var cleanup = dataSource.CreateCommand("DELETE FROM witness.cases WHERE id=$1");
+                cleanup.Parameters.AddWithValue(caseId);
+                await cleanup.ExecuteNonQueryAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task External_result_rejects_future_decision_timestamp()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__Ecmis");
+        if (string.IsNullOrWhiteSpace(connectionString))
+            return;
+
+        await using var dataSource = NpgsqlDataSource.Create(connectionString);
+        await new WitnessDatabaseInitializer(dataSource).InitializeAsync();
+        var repository = new WitnessRepository(dataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
+        var administrator = new WitnessUserContext(
+            Guid.NewGuid(), "future-external-admin", "ผู้ดูแลทดสอบ External", "ผู้ดูแลระบบ",
+            new HashSet<string> { "super_admin" }, new HashSet<string>
+            {
+                WitnessPermissions.Create,
+                WitnessPermissions.Edit
+            });
+        var external = new WitnessUserContext(
+            Guid.NewGuid(), "future-external-user", "ผู้รับผลภายนอกทดสอบ", "เจ้าหน้าที่ประสานผล",
+            new HashSet<string> { "external_module" },
+            new HashSet<string> { WitnessPermissions.ExternalReceive, WitnessPermissions.ViewMasked });
+        Guid caseId = Guid.Empty;
+
+        try
+        {
+            var created = await repository.CreateAsync(new CreateWitnessCaseRequest(
+                1,
+                new Dictionary<string, string>
+                {
+                    ["witness_first_name"] = "E2E-TEST Future External",
+                    ["witness_last_name"] = "สังเคราะห์",
+                    ["petitioner_first_name"] = "E2E-TEST Future External",
+                    ["petitioner_last_name"] = "สังเคราะห์"
+                },
+                Submit: false,
+                IdempotencyKey: $"future-external-{Guid.NewGuid():N}"),
+                administrator, "127.0.0.1", default);
+            caseId = created.Case.Id;
+            var formId = Guid.NewGuid();
+            await using (var prepareCase = dataSource.CreateCommand("""
+                UPDATE witness.cases
+                SET status='external_pending', current_owner_role='external_module',
+                    current_owner_user_id=NULL, current_owner_name=''
+                WHERE id=$1
+                """))
+            {
+                prepareCase.Parameters.AddWithValue(caseId);
+                await prepareCase.ExecuteNonQueryAsync();
+            }
+            await using (var prepareForm = dataSource.CreateCommand("""
+                INSERT INTO witness.forms(
+                    id, case_id, form_number, version, status, values_data,
+                    updated_by, updated_by_name, updated_at)
+                VALUES($1,$2,6,1,'signed','{}'::jsonb,$3,$4,NOW())
+                """))
+            {
+                prepareForm.Parameters.AddWithValue(formId);
+                prepareForm.Parameters.AddWithValue(caseId);
+                prepareForm.Parameters.AddWithValue(external.UserId);
+                prepareForm.Parameters.AddWithValue(external.DisplayName);
+                await prepareForm.ExecuteNonQueryAsync();
+            }
+            await using (var prepareSignature = dataSource.CreateCommand("""
+                INSERT INTO witness.form_signatures(
+                    id, form_id, form_version, signer_user_id, signer_name, signer_position,
+                    signer_role, signer_purpose, verification_method, evidence_reference,
+                    document_hash, signed_at)
+                VALUES($1,$2,1,$3,$4,'เจ้าหน้าที่ประสานผล','external_module',
+                    'ผู้มีอำนาจจาก External Module','integration-test','FUTURE-EXT',repeat('a',64),NOW())
+                """))
+            {
+                prepareSignature.Parameters.AddWithValue(Guid.NewGuid());
+                prepareSignature.Parameters.AddWithValue(formId);
+                prepareSignature.Parameters.AddWithValue(external.UserId);
+                prepareSignature.Parameters.AddWithValue(external.DisplayName);
+                await prepareSignature.ExecuteNonQueryAsync();
+            }
+
+            var attachment = await repository.AddAttachmentAsync(
+                caseId, 6, 1, "E2E-TEST-external-result.pdf", "application/pdf",
+                new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D }, administrator, "127.0.0.1", default);
+            var detail = await repository.GetDetailAsync(caseId, external, default);
+            Assert.NotNull(detail);
+            var data = new Dictionary<string, string> { ["external_attachment_id"] = attachment.Id.ToString() };
+
+            var error = await Assert.ThrowsAsync<WitnessWorkflowException>(() =>
+                repository.ReceiveExternalResultAsync(caseId,
+                    new ReceiveExternalResultRequest(
+                        "rejected", "E2E-TEST-FUTURE-EXT", DateTimeOffset.UtcNow.AddDays(1),
+                        "E2E-TEST ผลในอนาคต", detail!.Case.Version, data),
+                    external, "127.0.0.1", default));
+            Assert.Equal("วันที่คำสั่งจาก External Module ต้องไม่เป็นเวลาในอนาคต", error.Message);
+
+            var accepted = await repository.ReceiveExternalResultAsync(caseId,
+                new ReceiveExternalResultRequest(
+                    "rejected", "E2E-TEST-VALID-EXT", DateTimeOffset.UtcNow.AddMinutes(-1),
+                    "E2E-TEST ผลเวลาปัจจุบัน", detail!.Case.Version, data),
+                external, "127.0.0.1", default);
+            Assert.Equal(WitnessStatuses.RejectedPendingNotice, accepted.ToStatus);
+        }
+        finally
+        {
+            if (caseId != Guid.Empty)
             {
                 await using var cleanup = dataSource.CreateCommand("DELETE FROM witness.cases WHERE id=$1");
                 cleanup.Parameters.AddWithValue(caseId);

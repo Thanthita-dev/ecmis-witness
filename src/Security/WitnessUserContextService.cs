@@ -45,15 +45,13 @@ public sealed record WitnessUserContext(
             StringComparer.OrdinalIgnoreCase);
 
     public bool HasPermission(string permission)
-    {
-        if (Permissions.Contains(permission) || Permissions.Contains("witness.*"))
-            return true;
+        => Permissions.Contains(permission);
 
-        return permission.StartsWith("witness.", StringComparison.OrdinalIgnoreCase)
-               && Roles.Any(GlobalAdministratorRoles.Contains);
-    }
+    public bool HasExplicitPermission(string permission)
+        => Permissions.Contains(permission);
 
-    public bool IsGlobalAdministrator => HasPermission("witness.*");
+    public bool IsGlobalAdministrator
+        => Permissions.Contains("witness.*") || Roles.Any(GlobalAdministratorRoles.Contains);
 
 }
 

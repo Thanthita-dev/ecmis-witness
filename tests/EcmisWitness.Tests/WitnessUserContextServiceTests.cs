@@ -161,6 +161,8 @@ public sealed class WitnessUserContextServiceTests
         Assert.True(piiReviewer.HasPermission(WitnessPermissions.ViewPii));
         Assert.False(piiReviewer.IsGlobalAdministrator);
         Assert.True(superAdmin.IsGlobalAdministrator);
+        Assert.False(superAdmin.HasPermission(WitnessPermissions.Create));
+        Assert.False(superAdmin.HasPermission(WitnessPermissions.NoticeManage));
     }
 
     private sealed class StubHandler : HttpMessageHandler

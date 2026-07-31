@@ -1,4 +1,5 @@
 using System.Text.Json;
+using EcmisWitness.Api.Domain;
 
 namespace EcmisWitness.Api.Contracts;
 
@@ -34,6 +35,16 @@ public sealed record WitnessCaseSummaryDto(
     int ProtectionAccumulatedDays = 0,
     string OrganizationName = "");
 
+public sealed record WitnessPagedResultDto<T>(
+    IReadOnlyList<T> Items,
+    int Page,
+    int PageSize,
+    long Total,
+    int TotalPages,
+    string SortBy,
+    string SortDirection,
+    IReadOnlyDictionary<string, long> StatusCounts);
+
 public sealed record WitnessCaseDetailDto(
     WitnessCaseSummaryDto Case,
     IReadOnlyDictionary<string, string> IntakeValues,
@@ -42,7 +53,46 @@ public sealed record WitnessCaseDetailDto(
     IReadOnlyList<WitnessWorkflowEventDto> WorkflowHistory,
     IReadOnlyList<WitnessAvailableActionDto> AvailableActions,
     WitnessCaseLinkDto? CaseLink,
-    IReadOnlyList<WitnessCaseAssignmentDto> Assignments);
+    IReadOnlyList<WitnessCaseAssignmentDto> Assignments,
+    WitnessAppealDto? CurrentAppeal = null,
+    WitnessAppealResultNoticeDto? CurrentAppealResultNotice = null);
+
+public sealed record WitnessAppealDto(
+    Guid Id,
+    Guid CaseId,
+    DateTimeOffset FiledAt,
+    string FiledChannel,
+    string Statement,
+    string? LateReason,
+    bool IsLate,
+    string Status,
+    long Version,
+    string? ExternalReference,
+    string? Decision,
+    DateTimeOffset? DecidedAt,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public sealed record WitnessAppealResultNoticeDto(
+    Guid Id,
+    Guid CaseId,
+    Guid AppealId,
+    Guid ExternalResultId,
+    string ExternalReference,
+    string Recipient,
+    string DeliveryChannel,
+    DateTimeOffset SentAt,
+    Guid ProofAttachmentId,
+    DateTimeOffset? ReceivedAt,
+    string? ActualRecipient,
+    string? ReceiptNote,
+    Guid? ReceiptProofAttachmentId,
+    string DeliveryStatus,
+    string CompletionStatus,
+    string CreatedBy,
+    DateTimeOffset CreatedAt,
+    string UpdatedBy,
+    DateTimeOffset UpdatedAt);
 
 public sealed record WitnessCaseAssignmentDto(
     Guid Id,
@@ -70,7 +120,12 @@ public sealed record WitnessCaseSearchQuery(
     string? AppealSla = null,
     DateOnly? ProtectionExpiryBefore = null,
     string? TransferStatus = null,
-    string? Organization = null);
+    string? Organization = null,
+    int Page = WitnessRegistryQueryContract.DefaultPage,
+    int PageSize = WitnessRegistryQueryContract.DefaultPageSize,
+    string? SortBy = WitnessRegistryQueryContract.DefaultSortBy,
+    string? SortDirection = WitnessRegistryQueryContract.DefaultSortDirection,
+    string? StatusGroup = null);
 
 public sealed record WitnessCaseLinkCandidateDto(
     long ComplaintId,
@@ -155,7 +210,37 @@ public sealed record WitnessAttachmentDto(
     int? FormNumber,
     int? FormVersion,
     DateTimeOffset UploadedAt,
-    string UploadedBy);
+    string UploadedBy,
+    Guid? AppealId = null,
+    string? EvidenceType = null);
+
+public sealed record WitnessKb1ShareLinkDto(
+    Guid Id,
+    Guid CaseId,
+    string RequestNo,
+    string Status,
+    DateTimeOffset ExpiresAt,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? LastAccessedAt,
+    DateTimeOffset? SubmittedAt,
+    string? AccessToken = null);
+
+public sealed record WitnessPublicKb1DraftDto(
+    string RequestNo,
+    string Status,
+    DateTimeOffset ExpiresAt,
+    int FormVersion,
+    long CaseVersion,
+    IReadOnlyDictionary<string, string> Values,
+    IReadOnlyList<WitnessAttachmentDto> Attachments);
+
+public sealed record SaveWitnessPublicKb1Request(
+    Dictionary<string, string> Values,
+    bool Complete,
+    bool ConfirmAccuracy,
+    int ExpectedFormVersion,
+    long ExpectedCaseVersion,
+    string? IdempotencyKey = null);
 
 public sealed record WitnessWorkflowEventDto(
     Guid Id,
@@ -209,7 +294,8 @@ public sealed record ReceiveExternalResultRequest(
     DateTimeOffset DecisionAt,
     string Reason,
     long ExpectedVersion,
-    Dictionary<string, string>? Data = null);
+    Dictionary<string, string>? Data = null,
+    string? IdempotencyKey = null);
 
 public sealed record LinkWitnessMainCaseRequest(
     long ComplaintId,

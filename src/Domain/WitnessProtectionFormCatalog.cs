@@ -206,7 +206,9 @@ public static class WitnessProtectionFormCatalog
                     C("proposal_5_1", "5.1 เห็นควรจัดให้มีการคุ้มครองชั่วคราว ออก คบ.5 และแจ้งพยาน"),
                     C("proposal_5_2", "5.2 เห็นควรประสานหน่วยงานอื่นให้การคุ้มครอง"), T("coordination_agency", "หน่วยงานที่ขอประสาน"),
                     C("proposal_5_3", "5.3 เห็นควรอนุมัติการเดินทางและค่าใช้จ่ายตาม 4.3–4.4"),
-                    A("officer_recommendation", "ความเห็นและข้อเสนอแนะเพิ่มเติมของเจ้าหน้าที่"), A("director_opinion", "ความเห็นผู้อำนวยการสำนัก/กอง"))
+                    A("officer_recommendation", "ความเห็นและข้อเสนอแนะเพิ่มเติมของเจ้าหน้าที่"),
+                    A("supervisor_opinion", "ความเห็นผู้บังคับบัญชาชั้นต้น"),
+                    A("director_opinion", "ความเห็นผู้อำนวยการสำนัก/กอง"))
             ]),
         new(
             5,
@@ -426,7 +428,11 @@ public static class WitnessProtectionFormCatalog
                     A("extension_reason", "ข้อพิจารณาและเหตุผล", true, sensitive: true), T("meeting_no", "มติที่ประชุมครั้งที่"), D("meeting_date", "วันที่ประชุม"),
                     N("extension_round", "ขยายครั้งที่", true), D("extension_start", "เริ่มช่วงขยาย", true), D("extension_end", "สิ้นสุดช่วงขยาย", true),
                     N("extension_years", "ระยะเวลาที่ขยาย (ปี)"), N("extension_months", "ระยะเวลาที่ขยาย (เดือน)"),
-                    N("extension_days", "ระยะเวลาที่ขยาย (วัน)", true), A("secretary_opinion", "มติ/ความเห็นผู้มีอำนาจ"),
+                    N("extension_days", "ระยะเวลาที่ขยาย (วัน)", true),
+                    A("supervisor_opinion", "ความเห็นผู้บังคับบัญชาชั้นต้น"),
+                    A("director_opinion", "ความเห็นผู้อำนวยการสำนัก/กอง"),
+                    A("deputy_secretary_opinion", "ความเห็นรองเลขาธิการ"),
+                    A("secretary_opinion", "มติ/ความเห็นผู้มีอำนาจ"),
                     A("conditions", "เงื่อนไขการปฏิบัติตามคำสั่ง"))
             ]),
         new(
