@@ -8,36 +8,108 @@ namespace EcmisWitness.Api.Domain;
 
 public sealed class WitnessFormPolicy
 {
-    private static readonly IReadOnlyDictionary<int, string> FormPermissions =
-        new Dictionary<int, string>
+    private static readonly IReadOnlyDictionary<int, IReadOnlySet<string>> FormEditPermissions =
+        new Dictionary<int, IReadOnlySet<string>>
         {
-            [1] = WitnessPermissions.Create,
-            [2] = WitnessPermissions.OfficerReview,
-            [3] = WitnessPermissions.OfficerReview,
-            [4] = WitnessPermissions.OfficerReview,
-            [5] = WitnessPermissions.DirectorReview,
-            [6] = WitnessPermissions.Edit,
-            [7] = WitnessPermissions.ProtectionManage,
-            [8] = WitnessPermissions.ProtectionManage,
-            [9] = WitnessPermissions.NoticeManage,
-            [10] = WitnessPermissions.NoticeManage,
-            [11] = WitnessPermissions.ProtectionManage,
-            [12] = WitnessPermissions.ProtectionManage,
-            [13] = WitnessPermissions.ProtectionManage,
-            [14] = WitnessPermissions.ProtectionManage,
-            [15] = WitnessPermissions.ProtectionManage,
-            [16] = WitnessPermissions.NoticeManage,
-            [17] = WitnessPermissions.NoticeManage
+            [1] = Permissions(WitnessPermissions.Create),
+            [2] = Permissions(WitnessPermissions.OfficerReview),
+            [3] = Permissions(WitnessPermissions.OfficerReview),
+            [4] = Permissions(WitnessPermissions.OfficerReview, WitnessPermissions.SupervisorReview,
+                WitnessPermissions.DirectorReview),
+            [5] = Permissions(WitnessPermissions.DirectorReview),
+            [6] = Permissions(WitnessPermissions.OfficerReview, WitnessPermissions.SupervisorReview,
+                WitnessPermissions.DirectorReview, WitnessPermissions.ExternalReceive),
+            [7] = Permissions(WitnessPermissions.ProtectionManage),
+            [8] = Permissions(WitnessPermissions.ProtectionManage, WitnessPermissions.ExternalReceive),
+            [9] = Permissions(WitnessPermissions.NoticeManage),
+            [10] = Permissions(WitnessPermissions.NoticeManage),
+            [11] = Permissions(WitnessPermissions.ProtectionManage),
+            [12] = Permissions(WitnessPermissions.ProtectionManage),
+            [13] = Permissions(WitnessPermissions.ProtectionManage),
+            [14] = Permissions(WitnessPermissions.ProtectionManage, WitnessPermissions.SupervisorReview,
+                WitnessPermissions.DirectorReview, WitnessPermissions.ExternalReceive),
+            [15] = Permissions(WitnessPermissions.ProtectionManage, WitnessPermissions.DirectorReview,
+                WitnessPermissions.ExternalReceive),
+            [16] = Permissions(WitnessPermissions.ExternalReceive),
+            [17] = Permissions(WitnessPermissions.NoticeManage)
+        };
+
+    private static readonly IReadOnlyDictionary<int, IReadOnlyDictionary<string, string>> OwnedOpinionFields =
+        new Dictionary<int, IReadOnlyDictionary<string, string>>
+        {
+            [4] = OpinionFields(
+                ("officer_recommendation", WitnessPermissions.OfficerReview),
+                ("supervisor_opinion", WitnessPermissions.SupervisorReview),
+                ("director_opinion", WitnessPermissions.DirectorReview)),
+            [6] = OpinionFields(
+                ("officer_recommendation", WitnessPermissions.OfficerReview),
+                ("supervisor_opinion", WitnessPermissions.SupervisorReview),
+                ("director_opinion", WitnessPermissions.DirectorReview),
+                ("deputy_secretary_opinion", WitnessPermissions.ExternalReceive),
+                ("secretary_opinion", WitnessPermissions.ExternalReceive)),
+            [14] = OpinionFields(
+                ("supervisor_opinion", WitnessPermissions.SupervisorReview),
+                ("director_opinion", WitnessPermissions.DirectorReview),
+                ("deputy_secretary_opinion", WitnessPermissions.ExternalReceive),
+                ("secretary_opinion", WitnessPermissions.ExternalReceive)),
+            [15] = OpinionFields(
+                ("team_leader_opinion", WitnessPermissions.ProtectionManage),
+                ("director_opinion", WitnessPermissions.DirectorReview),
+                ("deputy_secretary_opinion", WitnessPermissions.ExternalReceive),
+                ("secretary_opinion", WitnessPermissions.ExternalReceive))
         };
 
     public void EnsureCanEdit(int formNumber, WitnessUserContext user)
     {
         _ = WitnessProtectionFormCatalog.Get(formNumber);
-        if (formNumber is 8 or 16 && user.HasPermission(WitnessPermissions.ExternalReceive))
-            return;
-        var permission = FormPermissions[formNumber];
-        if (!user.HasPermission(permission) && !user.HasPermission(WitnessPermissions.Edit))
+        if (!FormEditPermissions[formNumber].Any(user.HasExplicitPermission))
             throw new WitnessAuthorizationException($"ไม่มีสิทธิ์แก้ไขแบบ คบ.{formNumber}");
+    }
+
+    public IReadOnlyDictionary<string, string> AuthorizeAndMergeValues(
+        int formNumber,
+        IReadOnlyDictionary<string, string> submittedValues,
+        IReadOnlyDictionary<string, string>? existingValues,
+        WitnessUserContext user,
+        string caseStatus,
+        string urgentStatus)
+    {
+        EnsureCanEdit(formNumber, user);
+        var activePermissions = ActiveEditPermissions(formNumber, caseStatus, urgentStatus);
+        if (!activePermissions.Any(user.HasExplicitPermission))
+            throw new WitnessAuthorizationException($"ไม่มีสิทธิ์แก้ไขแบบ คบ.{formNumber} ในขั้นตอนปัจจุบัน");
+
+        if (!OwnedOpinionFields.TryGetValue(formNumber, out var ownedFields))
+            return new Dictionary<string, string>(submittedValues, StringComparer.OrdinalIgnoreCase);
+
+        var canEditBaseFields = CanEditBaseFields(formNumber, caseStatus, urgentStatus, user);
+        if (existingValues is null && !canEditBaseFields)
+            throw new WitnessAuthorizationException($"ต้องให้ผู้จัดทำแบบ คบ.{formNumber} บันทึกข้อมูลก่อนความเห็นตามลำดับชั้น");
+
+        var result = existingValues is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(existingValues, StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in submittedValues)
+        {
+            if (string.Equals(key, "request_no", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (ownedFields.TryGetValue(key, out var ownerPermission))
+            {
+                if (!activePermissions.Contains(ownerPermission)
+                    || !user.HasExplicitPermission(ownerPermission))
+                    throw new WitnessAuthorizationException(
+                        $"ไม่มีสิทธิ์บันทึกฟิลด์ “{FieldLabel(formNumber, key)}” ในแบบ คบ.{formNumber}");
+            }
+            else if (!canEditBaseFields)
+            {
+                throw new WitnessAuthorizationException(
+                    $"บทบาทปัจจุบันแก้ไขได้เฉพาะความเห็นของตนในแบบ คบ.{formNumber}");
+            }
+
+            result[key] = value;
+        }
+        return result;
     }
 
     public void EnsureCanSign(int formNumber, WitnessUserContext user)
@@ -76,6 +148,11 @@ public sealed class WitnessFormPolicy
             throw new WitnessAuthorizationException($"ไม่มีสิทธิ์ลงนามแบบ คบ.{formNumber}");
     }
 
+    public static IReadOnlySet<string> RequiredEditPermissions(int formNumber)
+        => FormEditPermissions.TryGetValue(formNumber, out var permissions)
+            ? permissions
+            : Permissions();
+
     public void EnsureCanSignPurpose(string purpose, WitnessUserContext user)
     {
         var allowed = purpose switch
@@ -111,11 +188,65 @@ public sealed class WitnessFormPolicy
     }
 
     private static bool HasExplicitOperationalPermission(WitnessUserContext user, string permission)
-        => user.Permissions.Contains(permission);
+        => user.HasExplicitPermission(permission);
+
+    private static IReadOnlySet<string> ActiveEditPermissions(
+        int formNumber,
+        string caseStatus,
+        string urgentStatus)
+        => (formNumber, caseStatus, urgentStatus) switch
+        {
+            (4, WitnessStatuses.StaffReview, "awaiting_kb4") => Permissions(WitnessPermissions.OfficerReview),
+            (4, WitnessStatuses.StaffReview, "supervisor_review") => Permissions(WitnessPermissions.SupervisorReview),
+            (4, WitnessStatuses.StaffReview, "director_review") => Permissions(WitnessPermissions.DirectorReview),
+            (6, WitnessStatuses.StaffReview, _) => Permissions(WitnessPermissions.OfficerReview),
+            (6, WitnessStatuses.SupervisorReview, _) => Permissions(WitnessPermissions.SupervisorReview),
+            (6, WitnessStatuses.DirectorReview, _) => Permissions(WitnessPermissions.DirectorReview),
+            (6, WitnessStatuses.ExternalPending, _) => Permissions(WitnessPermissions.ExternalReceive),
+            (14, WitnessStatuses.ProtectionActive, _) => Permissions(WitnessPermissions.ProtectionManage),
+            (14, WitnessStatuses.ExtensionSupervisorReview, _) => Permissions(WitnessPermissions.SupervisorReview),
+            (14, WitnessStatuses.ExtensionDirectorReview, _) => Permissions(WitnessPermissions.DirectorReview),
+            (14, WitnessStatuses.ExtensionExternalPending, _) => Permissions(WitnessPermissions.ExternalReceive),
+            (15, WitnessStatuses.ProtectionActive, _) => Permissions(
+                WitnessPermissions.ProtectionManage, WitnessPermissions.DirectorReview),
+            (15, WitnessStatuses.TerminationExternalPending, _) => Permissions(WitnessPermissions.ExternalReceive),
+            _ => RequiredEditPermissions(formNumber)
+        };
+
+    private static bool CanEditBaseFields(
+        int formNumber,
+        string caseStatus,
+        string urgentStatus,
+        WitnessUserContext user)
+        => (formNumber, caseStatus, urgentStatus) switch
+        {
+            (4, WitnessStatuses.StaffReview, "awaiting_kb4")
+                => user.HasExplicitPermission(WitnessPermissions.OfficerReview),
+            (6, WitnessStatuses.StaffReview, _)
+                => user.HasExplicitPermission(WitnessPermissions.OfficerReview),
+            (14, WitnessStatuses.ProtectionActive, _)
+                => user.HasExplicitPermission(WitnessPermissions.ProtectionManage),
+            (15, WitnessStatuses.ProtectionActive, _)
+                => user.HasExplicitPermission(WitnessPermissions.ProtectionManage),
+            _ => false
+        };
+
+    private static string FieldLabel(int formNumber, string key)
+        => WitnessProtectionFormCatalog.Get(formNumber).Fields
+               .FirstOrDefault(field => string.Equals(field.Key, key, StringComparison.OrdinalIgnoreCase))?.Label
+           ?? key;
+
+    private static IReadOnlySet<string> Permissions(params string[] permissions)
+        => new HashSet<string>(permissions, StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlyDictionary<string, string> OpinionFields(
+        params (string Field, string Permission)[] fields)
+        => fields.ToDictionary(item => item.Field, item => item.Permission, StringComparer.OrdinalIgnoreCase);
 
     public void Validate(int formNumber, IReadOnlyDictionary<string, string> values, bool completed)
     {
         var definition = WitnessProtectionFormCatalog.Get(formNumber);
+        ValidatePersistentInvariants(formNumber, values);
         if (!completed)
             return;
 
@@ -179,6 +310,52 @@ public sealed class WitnessFormPolicy
         }
         if (formNumber == 14)
             ValidateExtension(values);
+    }
+
+    public void ValidatePersistentInvariants(
+        int formNumber,
+        IReadOnlyDictionary<string, string> values)
+    {
+        switch (formNumber)
+        {
+            case 1:
+                ValidateCitizenIdIfPresent(values, "petitioner_citizen_id");
+                ValidateCitizenIdIfPresent(values, "witness_citizen_id");
+                ValidateCitizenIdsInRepeatingGroup(values, "related_people", "identity_no");
+                ValidateDatePair(values, "petitioner_card_issued", "petitioner_card_expired");
+                ValidateDatePair(values, "witness_card_issued", "witness_card_expired");
+                break;
+            case 3:
+                if (values.TryGetValue("identity_type", out var identityType)
+                    && identityType.Contains("ประชาชน", StringComparison.OrdinalIgnoreCase))
+                {
+                    ValidateCitizenIdIfPresent(values, "identity_no");
+                }
+                ValidateDatePair(values, "identity_issued", "identity_expired");
+                break;
+            case 6:
+                ValidateCitizenIdIfPresent(values, "witness_id");
+                break;
+            case 7:
+            case 11:
+                ValidateCitizenIdIfPresent(values, "citizen_id");
+                break;
+            case 4:
+                ValidateProtectionPeriod(values, "start_date", "end_date");
+                break;
+        }
+    }
+
+    public static bool IsValidThaiCitizenId(string value)
+    {
+        if (value.Length != 13 || value.Any(character => character is < '0' or > '9'))
+            return false;
+
+        var sum = 0;
+        for (var index = 0; index < 12; index++)
+            sum += (value[index] - '0') * (13 - index);
+        var expectedCheckDigit = (11 - (sum % 11)) % 10;
+        return value[12] - '0' == expectedCheckDigit;
     }
 
     public static string ComputeContentHash(IReadOnlyDictionary<string, string> values)
@@ -245,6 +422,79 @@ public sealed class WitnessFormPolicy
         var accumulatedDays = NonNegativeInt(values, "total_days", "ระยะเวลาสะสม");
         if (accumulatedDays + declaredDays > 180)
             throw new WitnessWorkflowException("ระยะเวลาคุ้มครองสะสมรวมช่วงขยายต้องไม่เกิน 180 วัน");
+    }
+
+    private static void ValidateCitizenIdIfPresent(
+        IReadOnlyDictionary<string, string> values,
+        string key)
+    {
+        if (!values.TryGetValue(key, out var value) || string.IsNullOrEmpty(value))
+            return;
+        if (value.Length != 13 || value.Any(character => character is < '0' or > '9'))
+            throw new WitnessWorkflowException("เลขประจำตัวประชาชนต้องเป็นตัวเลข 13 หลัก");
+        if (!IsValidThaiCitizenId(value))
+            throw new WitnessWorkflowException("เลขประจำตัวประชาชนไม่ถูกต้อง");
+    }
+
+    private static void ValidateCitizenIdsInRepeatingGroup(
+        IReadOnlyDictionary<string, string> values,
+        string groupKey,
+        string citizenIdKey)
+    {
+        if (!values.TryGetValue(groupKey, out var json) || string.IsNullOrWhiteSpace(json))
+            return;
+
+        try
+        {
+            var rows = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(json) ?? [];
+            foreach (var row in rows)
+                ValidateCitizenIdIfPresent(row, citizenIdKey);
+        }
+        catch (JsonException)
+        {
+            throw new WitnessWorkflowException("ข้อมูลบุคคลที่เกี่ยวข้องมีรูปแบบไม่ถูกต้อง");
+        }
+    }
+
+    private static void ValidateDatePair(
+        IReadOnlyDictionary<string, string> values,
+        string issuedKey,
+        string expiryKey)
+    {
+        var hasIssued = values.TryGetValue(issuedKey, out var issuedRaw)
+                        && !string.IsNullOrEmpty(issuedRaw);
+        var hasExpiry = values.TryGetValue(expiryKey, out var expiryRaw)
+                        && !string.IsNullOrEmpty(expiryRaw);
+        DateOnly issued = default;
+        DateOnly expiry = default;
+        if (hasIssued && !WitnessIsoDate.TryParse(issuedRaw, out issued))
+            throw new WitnessWorkflowException("วันออกบัตรต้องอยู่ในรูปแบบ yyyy-MM-dd");
+        if (hasExpiry && !WitnessIsoDate.TryParse(expiryRaw, out expiry))
+            throw new WitnessWorkflowException("วันหมดอายุต้องอยู่ในรูปแบบ yyyy-MM-dd");
+        if (hasIssued && hasExpiry && expiry < issued)
+            throw new WitnessWorkflowException("วันหมดอายุต้องไม่ก่อนวันออกบัตร");
+    }
+
+    private static void ValidateProtectionPeriod(
+        IReadOnlyDictionary<string, string> values,
+        string startKey,
+        string endKey)
+    {
+        var hasStart = values.TryGetValue(startKey, out var startRaw)
+                       && !string.IsNullOrEmpty(startRaw);
+        var hasEnd = values.TryGetValue(endKey, out var endRaw)
+                     && !string.IsNullOrEmpty(endRaw);
+        DateOnly start = default;
+        DateOnly end = default;
+        if (hasStart && !WitnessIsoDate.TryParse(startRaw, out start))
+            throw new WitnessWorkflowException("วันเริ่มต้นการคุ้มครองต้องอยู่ในรูปแบบ yyyy-MM-dd");
+        if (hasEnd && !WitnessIsoDate.TryParse(endRaw, out end))
+            throw new WitnessWorkflowException("วันสิ้นสุดการคุ้มครองต้องอยู่ในรูปแบบ yyyy-MM-dd");
+        if (hasStart && hasEnd && end < start)
+        {
+            throw new WitnessWorkflowException(
+                "วันสิ้นสุดการคุ้มครองต้องไม่ก่อนวันเริ่มต้นการคุ้มครอง");
+        }
     }
 
     private static int PositiveInt(

@@ -19,7 +19,11 @@ public sealed class WitnessPersistenceIntegrationTests
         await new WitnessDatabaseInitializer(dataSource).InitializeAsync();
         var repository = new WitnessRepository(dataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
         var manager = new WitnessUserContext(Guid.NewGuid(), "assignment-admin", "ผู้ดูแลการมอบหมาย", "ผู้ดูแลระบบ",
-            new HashSet<string> { "super_admin" }, new HashSet<string>());
+            new HashSet<string> { "super_admin" }, new HashSet<string>
+            {
+                WitnessPermissions.Create,
+                WitnessPermissions.AssignmentManage
+            });
         var organizationA = Guid.NewGuid();
         var organizationB = Guid.NewGuid();
         var assignedUserId = Guid.NewGuid();
@@ -168,14 +172,17 @@ public sealed class WitnessPersistenceIntegrationTests
         await using var dataSource = NpgsqlDataSource.Create(connectionString);
         await new WitnessDatabaseInitializer(dataSource).InitializeAsync();
         var repository = new WitnessRepository(dataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
+        var organization = Guid.NewGuid();
         var supervisor = new WitnessUserContext(Guid.NewGuid(), "opinion-supervisor", "หัวหน้ากลุ่มทดสอบ", "หัวหน้ากลุ่มงาน",
             new HashSet<string> { "super_admin" }, new HashSet<string>
             {
+                WitnessPermissions.Create,
                 WitnessPermissions.OfficerReview,
                 WitnessPermissions.SupervisorReview
-            });
+            }, organization, "สำนักทดสอบ", "department");
         var director = new WitnessUserContext(Guid.NewGuid(), "opinion-director", "ผู้อำนวยการทดสอบ", "ผู้อำนวยการสำนัก",
-            new HashSet<string> { "super_admin" }, new HashSet<string> { WitnessPermissions.DirectorReview });
+            new HashSet<string> { "super_admin" }, new HashSet<string> { WitnessPermissions.DirectorReview },
+            organization, "สำนักทดสอบ", "department");
         Guid caseId = Guid.Empty;
 
         try
@@ -192,6 +199,17 @@ public sealed class WitnessPersistenceIntegrationTests
                 Submit: false,
                 IdempotencyKey: $"opinion-{Guid.NewGuid():N}"), supervisor, "127.0.0.1", default);
             caseId = created.Case.Id;
+            await using (var setOrganization = dataSource.CreateCommand("""
+                UPDATE witness.cases
+                SET owning_org_id=$2, current_owner_org_id=$2,
+                    owning_org_name='สำนักทดสอบ', current_owner_org_name='สำนักทดสอบ'
+                WHERE id=$1
+                """))
+            {
+                setOrganization.Parameters.AddWithValue(caseId);
+                setOrganization.Parameters.AddWithValue(organization);
+                await setOrganization.ExecuteNonQueryAsync();
+            }
             var formId = Guid.NewGuid();
             await using (var insertForm = dataSource.CreateCommand("""
                 INSERT INTO witness.forms(
@@ -316,7 +334,11 @@ public sealed class WitnessPersistenceIntegrationTests
             new HashSet<string> { "admin" }, new HashSet<string>
             {
                 "witness.*",
-                WitnessPermissions.NoticeManage
+                WitnessPermissions.Create,
+                WitnessPermissions.Edit,
+                WitnessPermissions.OfficerReview,
+                WitnessPermissions.NoticeManage,
+                WitnessPermissions.DocumentDownload
             });
         var repository = new WitnessRepository(firstDataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
         Guid caseId = Guid.Empty;
@@ -547,7 +569,12 @@ public sealed class WitnessPersistenceIntegrationTests
             new WitnessFormPolicy());
         var administrator = new WitnessUserContext(
             Guid.NewGuid(), "scope-test-admin", "Scope Test Admin", "ผู้ทดสอบ",
-            new HashSet<string> { "super_admin" }, new HashSet<string>());
+            new HashSet<string> { "super_admin" }, new HashSet<string>
+            {
+                WitnessPermissions.Create,
+                WitnessPermissions.Edit,
+                WitnessPermissions.DocumentDownload
+            });
         var organizationA = Guid.NewGuid();
         var organizationB = Guid.NewGuid();
         var createdCaseIds = new List<Guid>();
@@ -690,7 +717,11 @@ public sealed class WitnessPersistenceIntegrationTests
         var repository = new WitnessRepository(dataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
         var administrator = new WitnessUserContext(
             Guid.NewGuid(), "future-external-admin", "ผู้ดูแลทดสอบ External", "ผู้ดูแลระบบ",
-            new HashSet<string> { "super_admin" }, new HashSet<string>());
+            new HashSet<string> { "super_admin" }, new HashSet<string>
+            {
+                WitnessPermissions.Create,
+                WitnessPermissions.Edit
+            });
         var external = new WitnessUserContext(
             Guid.NewGuid(), "future-external-user", "ผู้รับผลภายนอกทดสอบ", "เจ้าหน้าที่ประสานผล",
             new HashSet<string> { "external_module" },

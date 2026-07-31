@@ -52,6 +52,18 @@ builder.Services.AddSingleton<WitnessFileValidator>();
 builder.Services.AddSingleton<WitnessDocumentService>();
 builder.Services.AddSingleton<WitnessReportService>();
 builder.Services.AddHostedService<WitnessExpiryAlertService>();
+var notificationApiBase = builder.Configuration["Notification:BaseUrl"];
+if (Uri.TryCreate(notificationApiBase, UriKind.Absolute, out var notificationApiUri))
+{
+    builder.Services.AddHttpClient<WitnessNotificationForwarderService>(client =>
+    {
+        client.BaseAddress = notificationApiUri;
+        client.Timeout = TimeSpan.FromSeconds(
+            Math.Clamp(builder.Configuration.GetValue("Notification:TimeoutSeconds", 15), 5, 60));
+    });
+    builder.Services.AddHostedService(serviceProvider =>
+        serviceProvider.GetRequiredService<WitnessNotificationForwarderService>());
+}
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
@@ -69,6 +81,11 @@ app.Use(async (context, next) =>
         await next();
     }
     catch (WitnessConcurrencyException ex)
+    {
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail(ex.Message));
+    }
+    catch (WitnessIdempotencyConflictException ex)
     {
         context.Response.StatusCode = StatusCodes.Status409Conflict;
         await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail(ex.Message));
@@ -98,6 +115,15 @@ app.Use(async (context, next) =>
     {
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail(ex.Message));
+    }
+    catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+    {
+        app.Logger.LogWarning(ex,
+            "Witness API rejected a duplicate database mutation; constraint {ConstraintName}",
+            ex.ConstraintName);
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail(
+            "ข้อมูลนี้ถูกบันทึกไปแล้ว กรุณาโหลดข้อมูลล่าสุดก่อนดำเนินการอีกครั้ง"));
     }
     catch (Exception ex)
     {
