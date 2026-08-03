@@ -55,6 +55,28 @@ public sealed class WitnessAttachmentAndDocumentTests
     }
 
     [Fact]
+    public void Generated_docx_embeds_current_signature_evidence_image()
+    {
+        var signatureId = Guid.NewGuid();
+        var signature = new WitnessSignatureDto(
+            signatureId, 2, "E2E-TEST ผู้ยื่น", "ผู้ยื่นคำร้อง", "public_petitioner",
+            "ผู้ยื่นคำร้อง", "ลายมือชื่อบนหน้าจอ", "SHA-256 E2E", "E2E-HASH",
+            new DateTimeOffset(2026, 8, 3, 14, 0, 0, TimeSpan.FromHours(7)), Guid.NewGuid());
+        var form = new WitnessFormDto(Guid.NewGuid(), Guid.NewGuid(), "WP-E2E-TEST-SIGNATURE", 1, 2, "completed",
+            new Dictionary<string, string> { ["petitioner_first_name"] = "E2E-TEST" },
+            [signature], DateTimeOffset.UtcNow, "E2E-TEST", 2, []);
+        var png = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+
+        using var stream = new MemoryStream(new WitnessDocumentService().GenerateOfficialDocx(
+            form, new Dictionary<Guid, byte[]> { [signatureId] = png }));
+        using var document = WordprocessingDocument.Open(stream, false);
+
+        Assert.Single(document.MainDocumentPart!.ImageParts);
+        Assert.Contains("E2E-TEST ผู้ยื่น", document.MainDocumentPart.Document.Body!.InnerText);
+    }
+
+    [Fact]
     public void Generated_docx_includes_append_only_hierarchical_opinions()
     {
         var form = new WitnessFormDto(Guid.NewGuid(), Guid.NewGuid(), "WP-2569-000003", 6, 2, "completed",

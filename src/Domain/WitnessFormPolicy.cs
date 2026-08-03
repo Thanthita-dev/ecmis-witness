@@ -187,6 +187,14 @@ public sealed class WitnessFormPolicy
             throw new WitnessAuthorizationException($"ไม่มีสิทธิ์ลงนามในหน้าที่ “{purpose}”");
     }
 
+    public void EnsureCanSignPurpose(int formNumber, string purpose, WitnessUserContext user)
+    {
+        if (formNumber == 1 && string.Equals(purpose, "ผู้ยื่นคำร้อง", StringComparison.Ordinal))
+            throw new WitnessAuthorizationException(
+                "ลายมือชื่อผู้ยื่นคำร้องต้องลงนามโดยผู้ยื่นผ่านลิงก์แบบ คบ.1");
+        EnsureCanSignPurpose(purpose, user);
+    }
+
     private static bool HasExplicitOperationalPermission(WitnessUserContext user, string permission)
         => user.HasExplicitPermission(permission);
 

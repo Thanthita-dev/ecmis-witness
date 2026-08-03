@@ -89,6 +89,116 @@ public sealed class WitnessUserContextServiceTests
     }
 
     [Fact]
+    public async Task Legacy_activity12_contract_resolves_integer_scope_without_cross_database_query()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new
+            {
+                success = true,
+                data = new
+                {
+                    username = "legacy.officer",
+                    firstName = "เจ้าหน้าที่",
+                    lastName = "ทดสอบ",
+                    orgId = 42,
+                    orgName = "กลุ่มงานทดสอบ",
+                    positionId = 7,
+                    positionName = "นักสืบสวนสอบสวน",
+                    roles = new[] { "witness_officer" },
+                    permissions = new[] { WitnessPermissions.ViewMasked }
+                }
+            })
+        });
+        await using var dataSource = NpgsqlDataSource.Create(
+            "Host=127.0.0.1;Port=1;Database=must-not-be-used;Username=unused;Password=unused;Timeout=1");
+        var service = new WitnessUserContextService(dataSource,
+            new HttpClient(handler) { BaseAddress = new Uri("https://admin.example/") },
+            new MemoryCache(new MemoryCacheOptions()),
+            new ConfigurationBuilder().Build());
+        var http = new DefaultHttpContext();
+        http.Request.Headers.Authorization = "Bearer legacy-contract-token";
+
+        var user = await service.GetAsync(http, default);
+
+        Assert.NotNull(user);
+        Assert.Equal("legacy.officer", user.Username);
+        Assert.Equal("กลุ่มงานทดสอบ", user.OrganizationName);
+        Assert.Equal("นักสืบสวนสอบสวน", user.Position);
+        Assert.NotNull(user.OrganizationId);
+    }
+
+    [Fact]
+    public async Task Super_admin_without_organization_loads_global_scope_from_admin_api()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new
+            {
+                success = true,
+                data = new
+                {
+                    username = "thanthita",
+                    firstName = "Thanthita",
+                    roles = new[] { "super_admin" },
+                    permissions = new[] { "witness.*" }
+                }
+            })
+        });
+        await using var dataSource = NpgsqlDataSource.Create(
+            "Host=127.0.0.1;Port=1;Database=must-not-be-used;Username=unused;Password=unused;Timeout=1");
+        var service = new WitnessUserContextService(dataSource,
+            new HttpClient(handler) { BaseAddress = new Uri("https://admin.example/") },
+            new MemoryCache(new MemoryCacheOptions()),
+            new ConfigurationBuilder().Build());
+        var http = new DefaultHttpContext();
+        http.Request.Headers.Authorization = "Bearer super-admin-contract-token";
+
+        var user = await service.GetAsync(http, default);
+
+        Assert.NotNull(user);
+        Assert.True(user.IsGlobalAdministrator);
+        Assert.Null(user.OrganizationId);
+    }
+
+    [Fact]
+    public async Task Demo_super_admin_full_access_projects_explicit_operational_permissions()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new
+            {
+                success = true,
+                data = new
+                {
+                    username = "demo.superadmin",
+                    roles = new[] { "super_admin" },
+                    permissions = new[] { "witness.*" }
+                }
+            })
+        });
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Witness:DemoSuperAdminFullAccess"] = "true"
+            })
+            .Build();
+        await using var dataSource = NpgsqlDataSource.Create(
+            "Host=127.0.0.1;Port=1;Database=must-not-be-used;Username=unused;Password=unused;Timeout=1");
+        var service = new WitnessUserContextService(dataSource,
+            new HttpClient(handler) { BaseAddress = new Uri("https://admin.example/") },
+            new MemoryCache(new MemoryCacheOptions()),
+            configuration);
+        var http = new DefaultHttpContext();
+        http.Request.Headers.Authorization = "Bearer demo-super-admin-token";
+
+        var user = await service.GetAsync(http, default);
+
+        Assert.NotNull(user);
+        Assert.All(WitnessPermissions.All, permission => Assert.True(user.HasExplicitPermission(permission)));
+    }
+
+    [Fact]
     public async Task Admin_failure_is_reported_as_dependency_failure()
     {
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));
@@ -121,6 +231,8 @@ public sealed class WitnessUserContextServiceTests
                     {
                         userId = Guid.Parse("541f1763-943e-46de-baf7-ed2fc093ea78"),
                         username = "concurrent.officer",
+                        organizationId = Guid.Parse("0f97ea47-2404-4c46-a696-1c70c944b7fd"),
+                        organizationName = "กลุ่มงานคุ้มครองพยาน",
                         roles = new[] { "witness_officer" },
                         permissions = Array.Empty<string>()
                     }

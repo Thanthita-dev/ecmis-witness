@@ -198,7 +198,8 @@ public sealed record WitnessSignatureDto(
     string VerificationMethod,
     string EvidenceReference,
     string DocumentHash,
-    DateTimeOffset SignedAt);
+    DateTimeOffset SignedAt,
+    Guid? EvidenceAttachmentId = null);
 
 public sealed record WitnessAttachmentDto(
     Guid Id,
@@ -240,7 +241,9 @@ public sealed record SaveWitnessPublicKb1Request(
     bool ConfirmAccuracy,
     int ExpectedFormVersion,
     long ExpectedCaseVersion,
-    string? IdempotencyKey = null);
+    string? IdempotencyKey = null,
+    bool ConsentToElectronicSignature = false,
+    string? SignatureDataUrl = null);
 
 public sealed record WitnessWorkflowEventDto(
     Guid Id,

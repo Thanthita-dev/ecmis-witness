@@ -43,6 +43,7 @@ public static class WitnessSignaturePolicy
     public static IReadOnlyList<string> PrerequisitePurposes(int formNumber, string purpose)
         => (formNumber, purpose) switch
         {
+            (1, "เจ้าหน้าที่ผู้รับคำร้อง") => ["ผู้ยื่นคำร้อง"],
             (5, "พยานผู้รับทราบ") => ["ผู้อำนวยการสำนัก/กองผู้ออกคำสั่ง"],
             (8, "พยานผู้รับทราบ") => ["เลขาธิการผู้ลงนามคำสั่ง"],
             _ => []

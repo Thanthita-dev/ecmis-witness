@@ -11,6 +11,9 @@ namespace EcmisWitness.Tests;
 [Collection(WitnessIdempotencyPostgresCollection.Name)]
 public sealed class WitnessKb1PublicShareIntegrationTests
 {
+    private const string SignatureDataUrl =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
     [Fact]
     public async Task Public_Kb1_share_saves_replays_and_submits_into_the_original_case()
     {
@@ -58,12 +61,22 @@ public sealed class WitnessKb1PublicShareIntegrationTests
             Assert.Equal(2L, await ScalarAsync<long>(dataSource,
                 "SELECT COUNT(*) FROM witness.form_versions WHERE case_id=$1 AND form_number=1", caseId));
 
-            var completed = await repository.SavePublicKb1DraftAsync(share.AccessToken!,
-                new SaveWitnessPublicKb1Request(validValues, true, true,
+            var submitKey = $"E2E-KB1-SHARE-SUBMIT-{Guid.NewGuid():N}";
+            var submitRequest = new SaveWitnessPublicKb1Request(validValues, true, true,
                     concurrent[0].FormVersion, concurrent[0].CaseVersion,
-                    $"E2E-KB1-SHARE-SUBMIT-{Guid.NewGuid():N}"),
+                    submitKey,
+                    ConsentToElectronicSignature: true,
+                    SignatureDataUrl: SignatureDataUrl);
+            var completed = await repository.SavePublicKb1DraftAsync(share.AccessToken!, submitRequest,
+                "127.0.0.1", default);
+            var replayed = await repository.SavePublicKb1DraftAsync(share.AccessToken!, submitRequest,
                 "127.0.0.1", default);
             Assert.Equal("submitted", completed.Status);
+            Assert.Equal(completed.RequestNo, replayed.RequestNo);
+            Assert.Equal(completed.Status, replayed.Status);
+            Assert.Equal(completed.FormVersion, replayed.FormVersion);
+            Assert.Equal(completed.CaseVersion, replayed.CaseVersion);
+            Assert.Equal(completed.Attachments.Select(item => item.Id), replayed.Attachments.Select(item => item.Id));
             Assert.Equal("staff_review", await ScalarAsync<string>(dataSource,
                 "SELECT status FROM witness.cases WHERE id=$1", caseId));
             Assert.Equal("submitted", await ScalarAsync<string>(dataSource,
@@ -72,6 +85,20 @@ public sealed class WitnessKb1PublicShareIntegrationTests
                 "SELECT COUNT(*) FROM witness.workflow_events WHERE case_id=$1 AND action='public-kb1-submitted'", caseId));
             Assert.True(await ScalarAsync<long>(dataSource,
                 "SELECT COUNT(*) FROM witness.audit_events WHERE case_id=$1 AND action='kb1.public.submitted'", caseId) == 1);
+            Assert.Equal(1L, await ScalarAsync<long>(dataSource,
+                "SELECT COUNT(*) FROM witness.form_signatures WHERE case_id=$1 AND signer_purpose='ผู้ยื่นคำร้อง' AND evidence_attachment_id IS NOT NULL", caseId));
+            Assert.Equal(1L, await ScalarAsync<long>(dataSource,
+                "SELECT COUNT(*) FROM witness.attachments WHERE case_id=$1 AND content_type='image/png' AND deleted_at IS NULL", caseId));
+            var signatureId = Guid.Parse(await ScalarAsync<string>(dataSource,
+                "SELECT id::text FROM witness.form_signatures WHERE case_id=$1 AND signer_purpose='ผู้ยื่นคำร้อง'", caseId));
+            var signatureEvidence = await repository.GetSignatureEvidenceContentAsync(
+                caseId, 1, signatureId, officer, "127.0.0.1", default);
+            Assert.NotNull(signatureEvidence);
+            Assert.Equal("image/png", signatureEvidence.ContentType);
+            Assert.True(signatureEvidence.Content.AsSpan(0, 8)
+                .SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }));
+            Assert.Equal(1L, await ScalarAsync<long>(dataSource,
+                "SELECT COUNT(*) FROM witness.audit_events WHERE case_id=$1 AND action='signature.evidence.viewed'", caseId));
 
             var submittedPage = await repository.GetPublicKb1DraftAsync(share.AccessToken!, "127.0.0.1", default);
             Assert.Equal("submitted", submittedPage.Status);
@@ -91,6 +118,55 @@ public sealed class WitnessKb1PublicShareIntegrationTests
                 cleanIdempotency.Parameters.AddWithValue(shareId);
                 await cleanIdempotency.ExecuteNonQueryAsync();
             }
+            if (caseId != Guid.Empty)
+            {
+                await using var cleanup = dataSource.CreateCommand("DELETE FROM witness.cases WHERE id=$1");
+                cleanup.Parameters.AddWithValue(caseId);
+                await cleanup.ExecuteNonQueryAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Public_Kb1_submit_without_petitioner_signature_is_rejected_without_business_mutation()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__Ecmis");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        await using var dataSource = NpgsqlDataSource.Create(connectionString);
+        await new WitnessDatabaseInitializer(dataSource).InitializeAsync();
+        var repository = new WitnessRepository(dataSource, new WitnessWorkflowStateMachine(), new WitnessFormPolicy());
+        var officer = Officer();
+        Guid caseId = Guid.Empty;
+        try
+        {
+            var created = await repository.CreateAsync(new CreateWitnessCaseRequest(
+                    1, new Dictionary<string, string>(), Submit: false,
+                    IdempotencyKey: $"E2E-KB1-NO-SIGN-CREATE-{Guid.NewGuid():N}"),
+                officer, "127.0.0.1", default);
+            caseId = created.Case.Id;
+            var share = await repository.CreateKb1ShareLinkAsync(caseId, officer, "127.0.0.1", default);
+            var opened = await repository.GetPublicKb1DraftAsync(share.AccessToken!, "127.0.0.1", default);
+
+            var error = await Assert.ThrowsAsync<WitnessWorkflowException>(() =>
+                repository.SavePublicKb1DraftAsync(share.AccessToken!,
+                    new SaveWitnessPublicKb1Request(
+                        ValidKb1Values(), true, true, opened.FormVersion, opened.CaseVersion,
+                        $"E2E-KB1-NO-SIGN-SUBMIT-{Guid.NewGuid():N}"),
+                    "127.0.0.1", default));
+
+            Assert.Contains("ลายมือชื่อ", error.Message, StringComparison.Ordinal);
+            Assert.Equal(opened.FormVersion, await ScalarAsync<int>(dataSource,
+                "SELECT version FROM witness.forms WHERE case_id=$1 AND form_number=1", caseId));
+            Assert.Equal(opened.CaseVersion, await ScalarAsync<long>(dataSource,
+                "SELECT row_version FROM witness.cases WHERE id=$1", caseId));
+            Assert.Equal(0L, await ScalarAsync<long>(dataSource,
+                "SELECT COUNT(*) FROM witness.form_signatures WHERE case_id=$1", caseId));
+            Assert.Equal(0L, await ScalarAsync<long>(dataSource,
+                "SELECT COUNT(*) FROM witness.workflow_events WHERE case_id=$1 AND action='public-kb1-submitted'", caseId));
+        }
+        finally
+        {
             if (caseId != Guid.Empty)
             {
                 await using var cleanup = dataSource.CreateCommand("DELETE FROM witness.cases WHERE id=$1");

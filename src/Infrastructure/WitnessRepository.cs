@@ -1141,13 +1141,18 @@ public sealed class WitnessRepository(
         await using var tx = await connection.BeginTransactionAsync(ct);
         var link = await LockKb1ShareLinkAsync(connection, tx, accessToken, ct);
         var operation = request.Complete ? "public-kb1-submit" : "public-kb1-save";
+        var signatureEvidence = request.Complete
+            ? ParsePublicKb1Signature(request)
+            : null;
         var requestHash = ComputeIdempotencyHash(new
         {
             request.Values,
             request.Complete,
             request.ConfirmAccuracy,
             request.ExpectedFormVersion,
-            request.ExpectedCaseVersion
+            request.ExpectedCaseVersion,
+            request.ConsentToElectronicSignature,
+            signatureSha256 = signatureEvidence?.Sha256
         });
         var idempotency = await ReserveIdempotencyAsync(connection, tx, link.Id,
             $"witness:public-kb1:{link.CaseId:D}", operation, request.IdempotencyKey,
@@ -1219,6 +1224,52 @@ public sealed class WitnessRepository(
 
         if (request.Complete)
         {
+            var petitionerName = BuildPublicPetitionerName(values);
+            var signatureAttachmentId = Guid.NewGuid();
+            var signatureId = Guid.NewGuid();
+            var signatureFileName = $"{link.RequestNo}-ลายมือชื่อผู้ยื่น-v{nextFormVersion}.png";
+            await using (var attachmentCmd = new NpgsqlCommand("""
+                INSERT INTO witness.attachments(
+                    id, case_id, form_number, form_version, file_name, content_type,
+                    size_bytes, sha256, classification, content, uploaded_by,
+                    uploaded_by_name, uploaded_at, kb1_share_link_id)
+                VALUES($1,$2,1,$3,$4,'image/png',$5,$6,'ลับ',$7,$8,$9,$10,$11)
+                """, connection, tx))
+            {
+                attachmentCmd.Parameters.AddWithValue(signatureAttachmentId);
+                attachmentCmd.Parameters.AddWithValue(link.CaseId);
+                attachmentCmd.Parameters.AddWithValue(nextFormVersion);
+                attachmentCmd.Parameters.AddWithValue(signatureFileName);
+                attachmentCmd.Parameters.AddWithValue(signatureEvidence!.Content.LongLength);
+                attachmentCmd.Parameters.AddWithValue(signatureEvidence.Sha256);
+                attachmentCmd.Parameters.AddWithValue(signatureEvidence.Content);
+                attachmentCmd.Parameters.AddWithValue(publicUser.UserId);
+                attachmentCmd.Parameters.AddWithValue(petitionerName);
+                attachmentCmd.Parameters.AddWithValue(now);
+                attachmentCmd.Parameters.AddWithValue(link.Id);
+                await attachmentCmd.ExecuteNonQueryAsync(ct);
+            }
+            await using (var signatureCmd = new NpgsqlCommand("""
+                INSERT INTO witness.form_signatures(
+                    id, form_id, form_version, signer_user_id, signer_name, signer_position,
+                    signer_role, signer_purpose, verification_method, evidence_reference,
+                    document_hash, delegation_reference, signed_at, case_id, evidence_attachment_id)
+                VALUES($1,$2,$3,$4,$5,'ผู้ยื่นคำร้อง','public_petitioner','ผู้ยื่นคำร้อง',
+                       'ลายมือชื่อบนหน้าจอผ่านลิงก์เฉพาะ',$6,$7,NULL,$8,$9,$10)
+                """, connection, tx))
+            {
+                signatureCmd.Parameters.AddWithValue(signatureId);
+                signatureCmd.Parameters.AddWithValue(link.FormId);
+                signatureCmd.Parameters.AddWithValue(nextFormVersion);
+                signatureCmd.Parameters.AddWithValue(publicUser.UserId);
+                signatureCmd.Parameters.AddWithValue(petitionerName);
+                signatureCmd.Parameters.AddWithValue($"ไฟล์ลายมือชื่อ {signatureAttachmentId:D}; SHA-256 {signatureEvidence.Sha256}");
+                signatureCmd.Parameters.AddWithValue(contentHash);
+                signatureCmd.Parameters.AddWithValue(now);
+                signatureCmd.Parameters.AddWithValue(link.CaseId);
+                signatureCmd.Parameters.AddWithValue(signatureAttachmentId);
+                await signatureCmd.ExecuteNonQueryAsync(ct);
+            }
             await using var submitLink = new NpgsqlCommand("""
                 UPDATE witness.kb1_share_links
                 SET status='submitted', submitted_at=$2, row_version=row_version+1
@@ -1229,8 +1280,17 @@ public sealed class WitnessRepository(
             await submitLink.ExecuteNonQueryAsync(ct);
             await InsertWorkflowEventAsync(connection, tx, link.CaseId, "public-kb1-submitted",
                 WitnessStatuses.IntakeDraft, WitnessStatuses.StaffReview, publicUser,
-                "ผู้ยื่นยืนยันข้อมูลและส่งแบบ คบ.1 ให้เจ้าหน้าที่ตรวจสอบ", null,
+                "ผู้ยื่นยืนยันข้อมูล ลงลายมือชื่อ และส่งแบบ คบ.1 ให้เจ้าหน้าที่ตรวจสอบ", null,
                 request.IdempotencyKey, "{}", now, ct);
+            await InsertAuditAsync(connection, tx, link.CaseId,
+                "kb1.public.signature.captured", "signature", signatureId.ToString(),
+                publicUser, ipAddress, JsonSerializer.Serialize(new
+                {
+                    formVersion = nextFormVersion,
+                    signatureAttachmentId,
+                    signatureSha256 = signatureEvidence.Sha256,
+                    consent = request.ConsentToElectronicSignature
+                }), now, ct);
         }
         await InsertAuditAsync(connection, tx, link.CaseId,
             request.Complete ? "kb1.public.submitted" : "kb1.public.draft.saved",
@@ -1542,7 +1602,7 @@ public sealed class WitnessRepository(
         var allowedPurposes = WitnessProtectionFormCatalog.SignaturePurposes(formNumber);
         if (string.IsNullOrWhiteSpace(request.Purpose) || !allowedPurposes.Contains(request.Purpose, StringComparer.Ordinal))
             throw new WitnessWorkflowException("กรุณาเลือกหน้าที่ของผู้ลงนามให้ตรงตามแบบทางการ");
-        formPolicy.EnsureCanSignPurpose(request.Purpose, user);
+        formPolicy.EnsureCanSignPurpose(formNumber, request.Purpose, user);
         if (string.IsNullOrWhiteSpace(request.Position))
             throw new WitnessWorkflowException("กรุณาระบุตำแหน่งผู้ลงนาม");
         if (string.IsNullOrWhiteSpace(request.VerificationMethod)
@@ -1630,8 +1690,8 @@ public sealed class WitnessRepository(
             INSERT INTO witness.form_signatures(
                 id, form_id, form_version, signer_user_id, signer_name, signer_position,
                 signer_role, signer_purpose, verification_method, evidence_reference, document_hash,
-                delegation_reference, signed_at)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                delegation_reference, signed_at, case_id)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             """, connection, tx))
         {
             cmd.Parameters.AddWithValue(signatureId);
@@ -1647,6 +1707,7 @@ public sealed class WitnessRepository(
             cmd.Parameters.AddWithValue(documentHash);
             cmd.Parameters.AddWithValue((object?)authority?.DelegationReference ?? DBNull.Value);
             cmd.Parameters.AddWithValue(now);
+            cmd.Parameters.AddWithValue(caseId);
             try
             {
                 await cmd.ExecuteNonQueryAsync(ct);
@@ -2249,6 +2310,17 @@ public sealed class WitnessRepository(
             if (await referenced.ExecuteScalarAsync(ct) is true)
                 throw new WitnessWorkflowException("ไม่สามารถลบหลักฐานที่ผูกกับการแจ้งผลอุทธรณ์แล้ว");
         }
+        await using (var signatureReference = new NpgsqlCommand("""
+            SELECT EXISTS(
+                SELECT 1 FROM witness.form_signatures
+                WHERE case_id=$1 AND evidence_attachment_id=$2)
+            """, connection, tx))
+        {
+            signatureReference.Parameters.AddWithValue(caseId);
+            signatureReference.Parameters.AddWithValue(attachmentId);
+            if (await signatureReference.ExecuteScalarAsync(ct) is true)
+                throw new WitnessWorkflowException("ไม่สามารถลบไฟล์หลักฐานลายมือชื่อที่ผูกกับเอกสารแล้ว");
+        }
         await using (var cmd = new NpgsqlCommand("""
             UPDATE witness.attachments
             SET deleted_at=$3, deleted_by=$4, deleted_reason=$5
@@ -2586,7 +2658,8 @@ public sealed class WitnessRepository(
     {
         await using var cmd = dataSource.CreateCommand("""
             SELECT id, form_version, signer_name, signer_position, signer_role,
-                   signer_purpose, verification_method, evidence_reference, document_hash, signed_at
+                   signer_purpose, verification_method, evidence_reference, document_hash, signed_at,
+                   evidence_attachment_id
             FROM witness.form_signatures
             WHERE form_id=$1
             ORDER BY signed_at
@@ -2597,8 +2670,87 @@ public sealed class WitnessRepository(
         while (await reader.ReadAsync(ct))
             results.Add(new WitnessSignatureDto(reader.GetGuid(0), reader.GetInt32(1), reader.GetString(2),
                 reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6),
-                reader.GetString(7), reader.GetString(8), reader.GetFieldValue<DateTimeOffset>(9)));
+                reader.GetString(7), reader.GetString(8), reader.GetFieldValue<DateTimeOffset>(9),
+                reader.IsDBNull(10) ? null : reader.GetGuid(10)));
         return results;
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, byte[]>> GetSignatureEvidenceImagesAsync(
+        Guid caseId,
+        Guid formId,
+        int formVersion,
+        WitnessUserContext user,
+        CancellationToken ct)
+    {
+        EnsureView(user);
+        if (await GetSummaryAsync(caseId, user, ct) is null)
+            return new Dictionary<Guid, byte[]>();
+        await using var cmd = dataSource.CreateCommand("""
+            SELECT signature.id, attachment.content
+            FROM witness.form_signatures signature
+            JOIN witness.attachments attachment
+              ON attachment.id=signature.evidence_attachment_id
+             AND attachment.case_id=signature.case_id
+             AND attachment.deleted_at IS NULL
+            WHERE signature.case_id=$1
+              AND signature.form_id=$2
+              AND signature.form_version=$3
+              AND attachment.content_type='image/png'
+            """);
+        cmd.Parameters.AddWithValue(caseId);
+        cmd.Parameters.AddWithValue(formId);
+        cmd.Parameters.AddWithValue(formVersion);
+        var result = new Dictionary<Guid, byte[]>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            result[reader.GetGuid(0)] = (byte[])reader[1];
+        return result;
+    }
+
+    public async Task<AttachmentContent?> GetSignatureEvidenceContentAsync(
+        Guid caseId,
+        int formNumber,
+        Guid signatureId,
+        WitnessUserContext user,
+        string ipAddress,
+        CancellationToken ct)
+    {
+        if (!user.IsGlobalAdministrator
+            && !user.HasPermission(WitnessPermissions.ViewPii)
+            && !user.HasPermission(WitnessPermissions.Create)
+            && !user.HasPermission(WitnessPermissions.OfficerReview))
+            throw new WitnessAuthorizationException("ไม่มีสิทธิ์เปิดดูหลักฐานลายมือชื่อผู้ยื่นคำร้อง");
+        if (await GetSummaryAsync(caseId, user, ct) is null)
+            return null;
+
+        await using var cmd = dataSource.CreateCommand("""
+            SELECT attachment.file_name, attachment.content_type, attachment.content
+            FROM witness.form_signatures signature
+            JOIN witness.forms form_row
+              ON form_row.id=signature.form_id
+             AND form_row.case_id=signature.case_id
+             AND form_row.version=signature.form_version
+            JOIN witness.attachments attachment
+              ON attachment.id=signature.evidence_attachment_id
+             AND attachment.case_id=signature.case_id
+             AND attachment.deleted_at IS NULL
+            WHERE signature.id=$1
+              AND signature.case_id=$2
+              AND form_row.form_number=$3
+              AND signature.signer_purpose='ผู้ยื่นคำร้อง'
+              AND attachment.content_type='image/png'
+            """);
+        cmd.Parameters.AddWithValue(signatureId);
+        cmd.Parameters.AddWithValue(caseId);
+        cmd.Parameters.AddWithValue(formNumber);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return null;
+        var result = new AttachmentContent(reader.GetString(0), reader.GetString(1), (byte[])reader[2]);
+        await reader.CloseAsync();
+        await RecordSecretAccessAsync(caseId, "signature.evidence.viewed", "signature", signatureId.ToString(),
+            user, ipAddress, ct, JsonSerializer.Serialize(new { formNumber }));
+        return result;
     }
 
     private async Task<IReadOnlyList<WitnessFormOpinionDto>> ListOpinionsAsync(Guid formId, CancellationToken ct)
@@ -2678,6 +2830,53 @@ public sealed class WitnessRepository(
     private static string ComputeTokenHash(string token)
         => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)))
             .ToLowerInvariant();
+
+    private static PublicKb1SignatureEvidence ParsePublicKb1Signature(
+        SaveWitnessPublicKb1Request request)
+    {
+        if (!request.ConsentToElectronicSignature)
+            throw new WitnessWorkflowException("กรุณายินยอมและลงลายมือชื่อผู้ยื่นคำร้องก่อนส่งให้เจ้าหน้าที่");
+        const string prefix = "data:image/png;base64,";
+        if (string.IsNullOrWhiteSpace(request.SignatureDataUrl)
+            || !request.SignatureDataUrl.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            throw new WitnessWorkflowException("กรุณาลงลายมือชื่อผู้ยื่นคำร้องในช่องลายมือชื่อ");
+
+        byte[] content;
+        try
+        {
+            content = Convert.FromBase64String(request.SignatureDataUrl[prefix.Length..]);
+        }
+        catch (FormatException)
+        {
+            throw new WitnessWorkflowException("ข้อมูลลายมือชื่อไม่ถูกต้อง กรุณาลงลายมือชื่อใหม่");
+        }
+
+        if (content.Length is < 64 or > 512 * 1024
+            || !content.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+            throw new WitnessWorkflowException("ข้อมูลลายมือชื่อไม่ถูกต้อง กรุณาลงลายมือชื่อใหม่");
+        var width = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(content.AsSpan(16, 4));
+        var height = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(content.AsSpan(20, 4));
+        if (width == 0 || height == 0 || width > 1600 || height > 800)
+            throw new WitnessWorkflowException("ขนาดภาพลายมือชื่อไม่ถูกต้อง กรุณาลงลายมือชื่อใหม่");
+
+        return new PublicKb1SignatureEvidence(
+            content,
+            Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant());
+    }
+
+    private static string BuildPublicPetitionerName(IReadOnlyDictionary<string, string> values)
+    {
+        var name = string.Join(" ", new[]
+            {
+                values.GetValueOrDefault("petitioner_prefix", "").Trim(),
+                values.GetValueOrDefault("petitioner_first_name", "").Trim(),
+                values.GetValueOrDefault("petitioner_last_name", "").Trim()
+            }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        if (string.IsNullOrWhiteSpace(name))
+            throw new WitnessWorkflowException("กรุณาระบุชื่อผู้ยื่นคำร้องก่อนลงลายมือชื่อ");
+        return name;
+    }
 
     private static WitnessUserContext PublicKb1User(PublicKb1ShareRow link)
         => new(
@@ -2839,7 +3038,7 @@ public sealed class WitnessRepository(
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         var signed = await LoadCurrentSignaturesAsync(connection, null, caseId, ct);
         return actions
-            .Where(action => WitnessSignaturePolicy.Requirements(action.Code, status)
+            .Where(action => EffectiveSignatureRequirements(action.Code, status, signed)
                 .All(requirement => signed.Contains((requirement.FormNumber, requirement.Purpose))))
             .ToArray();
     }
@@ -2852,17 +3051,32 @@ public sealed class WitnessRepository(
         string status,
         CancellationToken ct)
     {
-        var requirements = WitnessSignaturePolicy.Requirements(action, status);
-        if (requirements.Count == 0)
+        var baseRequirements = WitnessSignaturePolicy.Requirements(action, status);
+        if (baseRequirements.Count == 0 && action != "submit-supervisor")
             return;
 
         var signed = await LoadCurrentSignaturesAsync(connection, tx, caseId, ct);
+        var requirements = EffectiveSignatureRequirements(action, status, signed);
         var missing = requirements
             .Where(requirement => !signed.Contains((requirement.FormNumber, requirement.Purpose)))
             .Select(requirement => $"คบ.{requirement.FormNumber} — {requirement.Purpose}")
             .ToArray();
         if (missing.Length > 0)
             throw new WitnessWorkflowException($"ลายมือชื่อที่จำเป็นยังไม่ครบ: {string.Join(", ", missing)}");
+    }
+
+    private static IReadOnlyList<WitnessRequiredSignature> EffectiveSignatureRequirements(
+        string action,
+        string status,
+        IReadOnlySet<(int FormNumber, string Purpose)> signed)
+    {
+        var requirements = WitnessSignaturePolicy.Requirements(action, status).ToList();
+        // เมื่อผู้ยื่นส่ง คบ.1 ผ่านลิงก์สาธารณะ ระบบมีลายมือชื่อผู้ยื่นแล้ว
+        // เจ้าหน้าที่ต้องตรวจและลงนามรับคำร้องก่อนส่งขึ้นตามลำดับชั้น
+        if (action == "submit-supervisor"
+            && signed.Contains((1, "ผู้ยื่นคำร้อง")))
+            requirements.Add(new WitnessRequiredSignature(1, "เจ้าหน้าที่ผู้รับคำร้อง"));
+        return requirements;
     }
 
     private static async Task<HashSet<(int FormNumber, string Purpose)>> LoadCurrentSignaturesAsync(
@@ -4586,6 +4800,7 @@ public sealed class WitnessRepository(
         int FormVersion,
         string FormStatus,
         Dictionary<string, string> Values);
+    private sealed record PublicKb1SignatureEvidence(byte[] Content, string Sha256);
     private sealed record AppealRow(
         Guid Id,
         Guid CaseId,
