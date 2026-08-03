@@ -554,12 +554,31 @@ public static class WitnessEndpoints
                 return Results.NotFound(ApiEnvelope<object>.Fail("ไม่พบแบบฟอร์มหรือไม่มีสิทธิ์เข้าถึงแฟ้มนี้"));
             if (form.Status == "draft")
                 throw new InvalidOperationException("ต้องบันทึกแบบฟอร์มฉบับสมบูรณ์ก่อนสร้างเอกสาร");
-            var content = documents.GenerateOfficialDocx(form);
+            var signatureImages = await repository.GetSignatureEvidenceImagesAsync(
+                caseId, form.Id, form.Version, user, ct);
+            var content = documents.GenerateOfficialDocx(form, signatureImages);
             var fileName = $"{form.RequestNo}-คบ-{formNumber}-v{form.Version}.docx";
             await repository.RecordDocumentDownloadAsync(caseId, form.Id, formNumber, form.Version,
                 user, ClientIp(http), ct);
             return Results.File(content,
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document", fileName);
+        });
+
+        group.MapGet("/cases/{caseId:guid}/forms/{formNumber:int}/signatures/{signatureId:guid}/evidence", async (
+            Guid caseId,
+            int formNumber,
+            Guid signatureId,
+            HttpContext http,
+            WitnessUserContextService users,
+            WitnessRepository repository,
+            CancellationToken ct) =>
+        {
+            var user = await RequireUserAsync(http, users, ct);
+            var result = await repository.GetSignatureEvidenceContentAsync(
+                caseId, formNumber, signatureId, user, ClientIp(http), ct);
+            return result is null
+                ? Results.NotFound(ApiEnvelope<object>.Fail("ไม่พบหลักฐานลายมือชื่อฉบับปัจจุบัน"))
+                : Results.File(result.Content, result.ContentType, enableRangeProcessing: false);
         });
 
         group.MapGet("/cases/{caseId:guid}/audit", async (

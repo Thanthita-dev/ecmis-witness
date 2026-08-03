@@ -329,6 +329,18 @@ public sealed class WitnessFormValidationTests
     }
 
     [Fact]
+    public void Authenticated_officer_cannot_sign_Kb1_as_the_petitioner()
+    {
+        var intakeOfficer = new WitnessUserContext(Guid.NewGuid(), "intake", "เจ้าหน้าที่รับคำร้อง", "",
+            new HashSet<string> { "intake" }, new HashSet<string> { WitnessPermissions.Create });
+
+        var error = Assert.Throws<WitnessAuthorizationException>(() =>
+            policy.EnsureCanSignPurpose(1, "ผู้ยื่นคำร้อง", intakeOfficer));
+
+        Assert.Contains("ผู้ยื่นคำร้องต้องลงนามโดยผู้ยื่น", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Global_admin_can_view_every_case_but_cannot_sign_for_an_operational_role()
     {
         var administrator = new WitnessUserContext(Guid.NewGuid(), "admin", "ผู้ดูแลระบบ", "ผู้ดูแลระบบ",

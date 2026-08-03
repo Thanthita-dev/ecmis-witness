@@ -4,12 +4,17 @@ using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using EcmisWitness.Api.Forms;
 using EcmisWitness.Api.Contracts;
+using A = DocumentFormat.OpenXml.Drawing;
+using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
+using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 
 namespace EcmisWitness.Api.Services;
 
 public sealed class WitnessDocumentService
 {
-    public byte[] GenerateOfficialDocx(WitnessFormDto form)
+    public byte[] GenerateOfficialDocx(
+        WitnessFormDto form,
+        IReadOnlyDictionary<Guid, byte[]>? signatureImages = null)
     {
         var definition = WitnessProtectionFormCatalog.Get(form.FormNumber);
         using var output = new MemoryStream();
@@ -96,6 +101,17 @@ public sealed class WitnessDocumentService
                         Cell($"{signature.VerificationMethod}\n{signature.EvidenceReference}\nHash: {signature.DocumentHash}", 2600)));
                 }
                 body.Append(signatureTable);
+                var imageIndex = 0U;
+                foreach (var signature in form.Signatures.Where(item => item.FormVersion == form.Version))
+                {
+                    if (signatureImages?.TryGetValue(signature.Id, out var imageBytes) != true
+                        || imageBytes is null)
+                        continue;
+                    body.Append(Paragraph($"ภาพลายมือชื่อ: {signature.SignerName} ({signature.SignerPurpose})", "BodyThai"));
+                    body.Append(new Paragraph(
+                        new ParagraphProperties(new Justification { Val = JustificationValues.Center }),
+                        new Run(CreateSignatureDrawing(mainPart, imageBytes, ++imageIndex))));
+                }
             }
 
             body.Append(Paragraph($"เอกสารรุ่น {form.Version} สร้างจากข้อมูลที่บันทึกใน E-CMIS เมื่อ {ToThaiDateTime(DateTimeOffset.UtcNow)}", "FooterNote"));
@@ -105,6 +121,48 @@ public sealed class WitnessDocumentService
             mainPart.Document.Save();
         }
         return output.ToArray();
+    }
+
+    private static Drawing CreateSignatureDrawing(
+        MainDocumentPart mainPart,
+        byte[] imageBytes,
+        uint imageIndex)
+    {
+        var imagePart = mainPart.AddImagePart(ImagePartType.Png);
+        using (var stream = new MemoryStream(imageBytes, writable: false))
+            imagePart.FeedData(stream);
+        var relationshipId = mainPart.GetIdOfPart(imagePart);
+        const long width = 2_743_200L;
+        const long height = 914_400L;
+        return new Drawing(
+            new DW.Inline(
+                new DW.Extent { Cx = width, Cy = height },
+                new DW.EffectExtent { LeftEdge = 0L, TopEdge = 0L, RightEdge = 0L, BottomEdge = 0L },
+                new DW.DocProperties { Id = imageIndex, Name = $"Signature {imageIndex}" },
+                new DW.NonVisualGraphicFrameDrawingProperties(
+                    new A.GraphicFrameLocks { NoChangeAspect = true }),
+                new A.Graphic(
+                    new A.GraphicData(
+                        new PIC.Picture(
+                            new PIC.NonVisualPictureProperties(
+                                new PIC.NonVisualDrawingProperties { Id = 0U, Name = $"signature-{imageIndex}.png" },
+                                new PIC.NonVisualPictureDrawingProperties()),
+                            new PIC.BlipFill(
+                                new A.Blip { Embed = relationshipId },
+                                new A.Stretch(new A.FillRectangle())),
+                            new PIC.ShapeProperties(
+                                new A.Transform2D(
+                                    new A.Offset { X = 0L, Y = 0L },
+                                    new A.Extents { Cx = width, Cy = height }),
+                                new A.PresetGeometry(new A.AdjustValueList())
+                                { Preset = A.ShapeTypeValues.Rectangle })))
+                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" }))
+            {
+                DistanceFromTop = 0U,
+                DistanceFromBottom = 0U,
+                DistanceFromLeft = 0U,
+                DistanceFromRight = 0U
+            });
     }
 
     private static void AddStyles(MainDocumentPart mainPart)

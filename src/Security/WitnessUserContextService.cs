@@ -27,6 +27,25 @@ public static class WitnessPermissions
     public const string DocumentDownload = "witness.document.download";
     public const string AuditView = "witness.audit.view";
     public const string AssignmentManage = "witness.assignment.manage";
+
+    public static readonly IReadOnlyCollection<string> All =
+    [
+        ViewMasked,
+        ViewPii,
+        ViewSafeHouse,
+        Create,
+        Edit,
+        OfficerReview,
+        SupervisorReview,
+        DirectorReview,
+        ExternalReceive,
+        NoticeManage,
+        ProtectionManage,
+        AppealManage,
+        DocumentDownload,
+        AuditView,
+        AssignmentManage
+    ];
 }
 
 public sealed record WitnessUserContext(
@@ -75,6 +94,8 @@ public sealed class WitnessUserContextService(
     private static readonly ConcurrentDictionary<string, Lazy<Task<WitnessUserContext?>>> InFlight = new();
     private readonly TimeSpan authenticationCacheDuration = TimeSpan.FromSeconds(
         Math.Clamp(configuration.GetValue("Witness:AuthCacheSeconds", 30), 5, 1800));
+    private readonly bool allowDemoSuperAdminFullAccess =
+        configuration.GetValue("Witness:DemoSuperAdminFullAccess", false);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
@@ -167,29 +188,80 @@ public sealed class WitnessUserContextService(
             if (string.IsNullOrWhiteSpace(displayName))
                 displayName = current.Username;
 
-            var isGlobalAdministrator = (current.Permissions ?? [])
+            var roles = new HashSet<string>(current.Roles ?? [], StringComparer.OrdinalIgnoreCase);
+            var permissions = new HashSet<string>(current.Permissions ?? [], StringComparer.OrdinalIgnoreCase);
+            var isGlobalAdministrator = permissions
                                             .Contains("witness.*", StringComparer.OrdinalIgnoreCase)
-                                        || (current.Roles ?? []).Any(GlobalRole);
-            var activity12 = current.UserId.HasValue
-                ? new Activity12Identity(
-                    current.UserId.Value,
-                    current.PositionName ?? current.UserType ?? "",
-                    current.OrganizationId,
-                    current.OrganizationName ?? "",
-                    current.OrganizationType ?? "")
-                : await ResolveActivity12IdentityAsync(current.Username, isGlobalAdministrator, ct);
+                                        || roles.Any(GlobalRole);
+            if (allowDemoSuperAdminFullAccess && roles.Any(SuperAdminRole))
+                permissions.UnionWith(WitnessPermissions.All);
+            // Activity 12 is a separate microservice and is authoritative for the
+            // current user's identity/scope.  Its legacy contract uses integer
+            // user/org identifiers while the newer contract uses UUIDs.  Resolve
+            // both shapes from the API response instead of querying Activity 12
+            // tables through the Witness database connection.
+            var activity12 = ResolveAdminApiIdentity(current, isGlobalAdministrator);
 
             return new WitnessUserContext(
                 activity12.UserId,
                 current.Username,
                 displayName,
                 activity12.Position,
-                new HashSet<string>(current.Roles ?? [], StringComparer.OrdinalIgnoreCase),
-                new HashSet<string>(current.Permissions ?? [], StringComparer.OrdinalIgnoreCase),
+                roles,
+                permissions,
                 activity12.OrganizationId,
                 activity12.OrganizationName,
                 activity12.OrganizationType);
         }
+    }
+
+    private static Activity12Identity ResolveAdminApiIdentity(
+        AdminCurrentUser current,
+        bool allowNoOrganization)
+    {
+        var userId = ResolveExternalIdentifier(
+                         current.UserId,
+                         "activity12-user")
+                     ?? ExternalId(
+                         "activity12-username",
+                         current.Username.Trim().ToLowerInvariant());
+        var organizationId = ResolveExternalIdentifier(
+                                 current.OrganizationId,
+                                 "activity12-department")
+                             ?? (current.OrgId.HasValue
+                                 ? ExternalId("activity12-department", current.OrgId.Value)
+                                 : null);
+
+        if (!organizationId.HasValue && !allowNoOrganization)
+            throw new WitnessDependencyException(
+                "ผู้ใช้งานยังไม่ได้รับมอบหมายหน่วยงานในกิจกรรมที่ 12");
+
+        return new Activity12Identity(
+            userId,
+            current.PositionName ?? current.UserType ?? "",
+            organizationId,
+            current.OrganizationName ?? current.OrgName ?? "",
+            current.OrganizationType
+            ?? (organizationId.HasValue ? "department" : ""));
+    }
+
+    private static Guid? ResolveExternalIdentifier(JsonElement value, string integerAuthority)
+    {
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString();
+            if (Guid.TryParse(text, out var guid))
+                return guid;
+            if (int.TryParse(text, out var integerId))
+                return ExternalId(integerAuthority, integerId);
+        }
+        else if (value.ValueKind == JsonValueKind.Number
+                 && value.TryGetInt32(out var integerId))
+        {
+            return ExternalId(integerAuthority, integerId);
+        }
+
+        return null;
     }
 
     private async Task<Activity12Identity> ResolveActivity12IdentityAsync(
@@ -334,7 +406,13 @@ public sealed class WitnessUserContextService(
         => role is not null && role.Trim().ToLowerInvariant() is
             "admin" or "system_admin" or "super_admin" or "superadmin";
 
+    private static bool SuperAdminRole(string role)
+        => role is not null && role.Trim().ToLowerInvariant() is "super_admin" or "superadmin";
+
     private static Guid ExternalId(string authority, int id)
+        => ExternalId(authority, id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    private static Guid ExternalId(string authority, string id)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{authority}:{id}"));
         return new Guid(hash.AsSpan(0, 16));
@@ -345,18 +423,23 @@ public sealed class WitnessUserContextService(
 
     private sealed record AdminApiEnvelope<T>(bool Success, T? Data, string? Message, string? Error);
 
-    private sealed record AdminCurrentUser(
-        Guid? UserId,
-        string Username,
-        string? UserType,
-        string? FirstName,
-        string? LastName,
-        string? PositionName,
-        Guid? OrganizationId,
-        string? OrganizationName,
-        string? OrganizationType,
-        string[]? Roles,
-        string[]? Permissions);
+    private sealed class AdminCurrentUser
+    {
+        public JsonElement UserId { get; init; }
+        public string Username { get; init; } = "";
+        public string? UserType { get; init; }
+        public string? FirstName { get; init; }
+        public string? LastName { get; init; }
+        public string? PositionName { get; init; }
+        public JsonElement OrganizationId { get; init; }
+        public string? OrganizationName { get; init; }
+        public string? OrganizationType { get; init; }
+        public int? OrgId { get; init; }
+        public string? OrgName { get; init; }
+        public int? PositionId { get; init; }
+        public string[]? Roles { get; init; }
+        public string[]? Permissions { get; init; }
+    }
 
     private sealed record Activity12Identity(
         Guid UserId,
